@@ -1,0 +1,5 @@
+[tool.vercel]
+entrypoint = "api/index.py"
+
+[build]
+install = [{ pip = "requirements.txt" }]
