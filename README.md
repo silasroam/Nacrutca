@@ -182,4 +182,4 @@ never from an incoming webhook payload.
   `TrafficProvider.submit_order` against the SMM provider REST API and swap the
   stub in `get_traffic_provider`.
 - **Crypto gateway:** implement signature verification inside
-  `CryptoPaymentProvider.handle_webhook` before calling `webhook_confirm_order`.
+  `CryptoPaymentProvider.handle_webhook` before calling `webhook_confirm_order`.# Nacrutca
