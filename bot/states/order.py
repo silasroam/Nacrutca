@@ -1,0 +1,23 @@
+"""FSM states for the order flow (section 19)."""
+from __future__ import annotations
+
+from enum import Enum, auto
+
+
+class OrderState(str, Enum):
+    """Named states describing where a user currently is in the flow."""
+
+    MAIN_MENU = "MAIN_MENU"
+    PLATFORM_SELECTION = "PLATFORM_SELECTION"
+    SERVICE_SELECTION = "SERVICE_SELECTION"
+    WAITING_FOR_QUANTITY = "WAITING_FOR_QUANTITY"
+    WAITING_FOR_URL = "WAITING_FOR_URL"
+    ORDER_CONFIRMATION = "ORDER_CONFIRMATION"
+    PAYMENT_SELECTION = "PAYMENT_SELECTION"
+    PAYMENT_PROCESSING = "PAYMENT_PROCESSING"
+    ORDER_STATUS = "ORDER_STATUS"
+    # Administration
+    ADMIN_MENU = "ADMIN_MENU"
+    ADMIN_CHANGE_PRICE = "ADMIN_CHANGE_PRICE"
+    ADMIN_TOGGLE_SERVICE = "ADMIN_TOGGLE_SERVICE"
+    ADMIN_EDIT_ORDER_STATUS = "ADMIN_EDIT_ORDER_STATUS"
