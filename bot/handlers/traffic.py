@@ -35,12 +35,11 @@ from ..services.pricing import PLATFORM_EMOJIS, PLATFORM_NAMES
 from ..states.order import OrderState
 from .common import (
     get_repo,
-    set_state,
-    get_state,
-    reset_flow,
-    ensure_draft,
     answer_query,
     safe_answer,
+    fsm_clear,
+    fsm_get,
+    fsm_set,
 )
 
 
@@ -53,8 +52,8 @@ _URL_RE = re.compile(r"^https?://[^\s]+$")
 async def buy_traffic(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await answer_query(query)
-    set_state(context, OrderState.PLATFORM_SELECTION)
-    ensure_draft(context)
+    await fsm_clear(context)
+    await fsm_set(context, OrderState.PLATFORM_SELECTION, {})
     await safe_answer(
         context, update.effective_chat.id,
         "🌐 <b>Выбор платформы</b>\n\n"
@@ -86,9 +85,7 @@ async def platform_selected(update: Update, context: CallbackContext) -> None:
         )
         return
 
-    draft = ensure_draft(context)
-    draft["platform"] = platform
-    set_state(context, OrderState.SERVICE_SELECTION)
+    await fsm_set(context, OrderState.SERVICE_SELECTION, {"platform": platform})
     emoji = PLATFORM_EMOJIS.get(platform, "")
     name = PLATFORM_NAMES.get(platform, platform)
     await safe_answer(
@@ -102,7 +99,7 @@ async def platform_selected(update: Update, context: CallbackContext) -> None:
 async def platform_back(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await answer_query(query)
-    reset_flow(context)
+    await fsm_clear(context)
     await buy_traffic(update, context)
 
 
@@ -120,11 +117,15 @@ async def service_selected(update: Update, context: CallbackContext) -> None:
         await answer_query(query, "Услуга недоступна.", alert=True)
         return
 
-    draft = ensure_draft(context)
-    draft["service_id"] = svc.id
-    draft["service"] = svc
-    platform = draft.get("platform", "")
-    set_state(context, OrderState.WAITING_FOR_QUANTITY)
+    # Persist the selected service + current platform into the DB draft so the
+    # LATER text-input step ("Введите количество…") can restore them on a fresh
+    # serverless instance.
+    _, prev_draft = await fsm_get(context)
+    platform = prev_draft.get("platform", "")
+    await fsm_set(context, OrderState.WAITING_FOR_QUANTITY, {
+        "service_id": svc.id,
+        "platform": platform,
+    })
 
     settings = context.bot_data["settings"]
     low = svc.min_quantity or settings.min_quantity
@@ -157,10 +158,15 @@ async def service_selected(update: Update, context: CallbackContext) -> None:
 # ---------------------------------------------------------------------------
 async def quantity_input(update: Update, context: CallbackContext) -> None:
     user_text = (update.effective_message.text or "").strip()
-    draft = ensure_draft(context)
-    svc: Service | None = draft.get("service")
+
+    # Restore the pre-selected service + platform from the DB draft (survives
+    # a serverless cold start between the service-selection button and this text).
+    _, draft = await fsm_get(context)
+    svc_id = draft.get("service_id")
+    repo = get_repo(context)
+    svc: Service | None = await repo.get_service(svc_id) if svc_id else None
     if svc is None:
-        reset_flow(context)
+        await fsm_clear(context)
         await safe_answer(
             context, update.effective_chat.id,
             "Сессия истекла. Начните заново — /start",
@@ -184,7 +190,7 @@ async def quantity_input(update: Update, context: CallbackContext) -> None:
 
     draft["quantity"] = quantity
     if svc.requires_url:
-        set_state(context, OrderState.WAITING_FOR_URL)
+        await fsm_set(context, OrderState.WAITING_FOR_URL, draft)
         await safe_answer(
             context, update.effective_chat.id,
             "🔗 <b>Укажите ссылку</b>\n\n"
@@ -193,6 +199,7 @@ async def quantity_input(update: Update, context: CallbackContext) -> None:
         )
     else:
         draft.pop("target_url", None)
+        await fsm_set(context, OrderState.ORDER_CONFIRMATION, draft)
         await show_confirmation(update, context)
 
 
@@ -201,7 +208,9 @@ async def quantity_input(update: Update, context: CallbackContext) -> None:
 # ---------------------------------------------------------------------------
 async def url_input(update: Update, context: CallbackContext) -> None:
     user_text = (update.effective_message.text or "").strip()
-    draft = ensure_draft(context)
+
+    # Read the persisted draft (service_id, quantity) from the DB.
+    _, draft = await fsm_get(context)
     if not _URL_RE.match(user_text) or len(user_text) > 2000:
         await safe_answer(
             context, update.effective_chat.id,
@@ -211,6 +220,7 @@ async def url_input(update: Update, context: CallbackContext) -> None:
         )
         return
     draft["target_url"] = user_text
+    await fsm_set(context, OrderState.ORDER_CONFIRMATION, draft)
     await show_confirmation(update, context)
 
 
@@ -218,18 +228,24 @@ async def url_input(update: Update, context: CallbackContext) -> None:
 # Confirmation screen (section 10)
 # ---------------------------------------------------------------------------
 async def show_confirmation(update: Update, context: CallbackContext) -> None:
-    draft = ensure_draft(context)
-    svc: Service = draft.get("service")
+    _, draft = await fsm_get(context)
+    svc_id = draft.get("service_id")
     quantity: int = draft.get("quantity")
-    if svc is None or not quantity:
-        reset_flow(context)
+    if not svc_id or not quantity:
+        await fsm_clear(context)
+        await safe_answer(context, update.effective_chat.id, "Начните заново — /start")
+        return
+    repo = get_repo(context)
+    svc: Service | None = await repo.get_service(svc_id)
+    if svc is None:
+        await fsm_clear(context)
         await safe_answer(context, update.effective_chat.id, "Начните заново — /start")
         return
 
     platform = draft.get("platform", "")
     emoji = svc.emoji or "•"
     total = quantity * svc.price_per_1000 / 1000.0
-    set_state(context, OrderState.ORDER_CONFIRMATION)
+    await fsm_set(context, OrderState.ORDER_CONFIRMATION, draft)
     text = (
         f"{emoji} <b>{PLATFORM_NAMES.get(platform, platform)} — {svc.name}</b>\n\n"
         f"💰 <b>Подтверждение заказа</b>\n\n"
@@ -246,18 +262,28 @@ async def show_confirmation(update: Update, context: CallbackContext) -> None:
 async def confirm_purchase(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await answer_query(query)
-    draft = ensure_draft(context)
-    svc: Service | None = draft.get("service")
+
+    _, draft = await fsm_get(context)
+    svc_id = draft.get("service_id")
     quantity: int | None = draft.get("quantity")
-    if svc is None or not quantity:
-        reset_flow(context)
+    if not svc_id or not quantity:
+        await fsm_clear(context)
+        await safe_answer(
+            context, update.effective_chat.id,
+            "❌ Заявка устарела. Начните заново — /start",
+        )
+        return
+    repo = get_repo(context)
+    svc = await repo.get_service(svc_id)
+    if svc is None:
+        await fsm_clear(context)
         await safe_answer(
             context, update.effective_chat.id,
             "❌ Заявка устарела. Начните заново — /start",
         )
         return
 
-    set_state(context, OrderState.PAYMENT_SELECTION)
+    await fsm_set(context, OrderState.PAYMENT_SELECTION, draft)
     await safe_answer(
         context, update.effective_chat.id,
         "💳 <b>Способ оплаты</b>\n\n"
@@ -270,7 +296,8 @@ async def confirm_purchase(update: Update, context: CallbackContext) -> None:
 # Shared text-input dispatcher based on the current FSM state
 # ---------------------------------------------------------------------------
 async def quantity_or_url_input(update: Update, context: CallbackContext) -> None:
-    state = get_state(context)
+    # Read the FSM state from the DB (serverless-safe) instead of MemoryPersistence.
+    state, _ = await fsm_get(context)
     if state == OrderState.WAITING_FOR_QUANTITY:
         await quantity_input(update, context)
     elif state == OrderState.WAITING_FOR_URL:

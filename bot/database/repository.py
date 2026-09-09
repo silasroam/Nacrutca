@@ -119,7 +119,10 @@ class Repository:
         await self.ensure_schema()
         if self._engine.dialect.name == "sqlite":
             await self._migrate_sqlite()
-        logger.info("Database schema ensured (SQLite mode).")
+            await self._migrate_sqlite_users()
+        elif self._engine.dialect.name == "postgresql":
+            await self._migrate_postgres_fsm()
+        logger.info("Database schema ensured (engine=%s).", self._engine.dialect.name)
 
     async def _migrate_sqlite(self) -> None:
         """Add missing columns to the 'orders' table for existing DBs."""
@@ -148,6 +151,48 @@ class Repository:
                     )
                     logger.info("Migrated orders.%s (added column)", col)
 
+    async def _migrate_sqlite_users(self) -> None:
+        """Add FSM columns to the existing SQLite 'users' table idempotently."""
+        from sqlalchemy import text
+
+        async with self._engine.begin() as conn:
+            existing = {
+                row[1]
+                for row in (await conn.execute(text("PRAGMA table_info('users')"))).fetchall()
+            }
+            for col, ddl in (
+                ("state", "VARCHAR(64)"),
+                ("draft_json", "TEXT"),
+            ):
+                if col not in existing:
+                    await conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
+                    logger.info("Migrated SQLite users.%s (added column)", col)
+
+    async def _migrate_postgres_fsm(self) -> None:
+        """Add FSM columns to the existing Postgres 'users' table idempotently.
+
+        ``create_all`` only creates NEW tables; on an already-existing Neon table
+        it does NOT add columns. So we ALTER here to persist per-user FSM state.
+        """
+        from sqlalchemy import text
+
+        async with self._engine.begin() as conn:
+            cols = {
+                row[0]
+                for row in (
+                    await conn.execute(text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name='users'"
+                    ))
+                ).fetchall()
+            }
+            for col, ddl in (
+                ("state", "VARCHAR(64) DEFAULT 'MAIN_MENU'"),
+                ("draft_json", "TEXT DEFAULT '{}'"),
+            ):
+                if col not in cols:
+                    await conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
+                    logger.info("Migrated Postgres users.%s (added column)", col)
     async def close(self) -> None:
         await self._engine.dispose()
 
@@ -189,6 +234,42 @@ class Repository:
             return list((await session.execute(stmt)).scalars().all())
 
     # ------------------------------------------------------------------
+    async def get_fsm(self, telegram_user_id: int) -> tuple[str, dict]:
+        """Return (state, draft) persisted for a user, with safe defaults.
+
+        Used as serverless-safe replacement for MemoryPersistence's user_data:
+        the interactive step (`state`) and the order draft are read from Postgres.
+        """
+        async with self._session_factory() as session:
+            stmt = select(User).where(User.telegram_user_id == telegram_user_id)
+            user = (await session.execute(stmt)).scalar_one_or_none()
+            if user is None:
+                return OrderState.MAIN_MENU, {}
+            draft: dict = {}
+            if user.draft_json:
+                try:
+                    import json as _json
+
+                    draft = _json.loads(user.draft_json) or {}
+                except Exception:  # pragma: no cover - malformed stored draft
+                    draft = {}
+            return (user.state or OrderState.MAIN_MENU), draft
+
+    async def save_fsm(
+        self, telegram_user_id: int, state: str, draft: dict | None = None
+    ) -> None:
+        """Persist (state, draft) for a user. Caller ensures the user row exists."""
+        import json as _json
+
+        async with self._session_factory() as session:
+            stmt = select(User).where(User.telegram_user_id == telegram_user_id)
+            user = (await session.execute(stmt)).scalar_one_or_none()
+            if user is None:
+                return
+            user.state = state or ""
+            if draft is not None:
+                user.draft_json = _json.dumps(draft, ensure_ascii=False, default=str)
+            await session.commit()
     # Services / pricing
     # ------------------------------------------------------------------
     async def list_services(self, platform: str | None = None) -> list[Service]:

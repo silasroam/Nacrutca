@@ -68,6 +68,60 @@ def ensure_draft(context: ContextTypes.DEFAULT_TYPE) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Serverless-safe FSM helpers (persist state + draft in the DB)
+#
+# Vercel serverless has no in-memory persistence, so `context.user_data`
+# (MemoryPersistence) is LOST between independent function invocations. For the
+# order flow we therefore ALSO persist `state` and the JSON `draft` in the
+# `users` table (User.state / User.draft_json) and read them back here.
+# The synchronous helpers above remain for places that never cross a process
+# boundary; the async *_fsm helpers below are the source of truth for the
+# multi-step purchase flow.
+# ---------------------------------------------------------------------------
+async def _fsm_user_id(context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    # The chat id is a reliable stable key for a private chat; for group chats
+    # you should use the effective_user id. We pick the user id when available.
+    update = getattr(context, "update", None)
+    user = update.effective_user if update is not None else None
+    if user is not None and user.id is not None:
+        return user.id
+    chat_id = None
+    if update is not None and update.effective_chat is not None:
+        chat_id = update.effective_chat.id
+    return chat_id
+
+
+async def fsm_get(context: ContextTypes.DEFAULT_TYPE, user_id: int | None = None
+                  ) -> tuple[str, dict]:
+    """Return (state, draft) read from the DB for the user."""
+    uid = user_id if user_id is not None else await _fsm_user_id(context)
+    if uid is None:
+        return OrderState.MAIN_MENU, {}
+    try:
+        return await get_repo(context).get_fsm(int(uid))
+    except Exception:  # pragma: no cover - DB/network errors
+        return OrderState.MAIN_MENU, {}
+
+
+async def fsm_set(context: ContextTypes.DEFAULT_TYPE, state: str,
+                  draft: dict | None = None, user_id: int | None = None) -> None:
+    """Persist state (and optional draft) for the user in the DB."""
+    uid = user_id if user_id is not None else await _fsm_user_id(context)
+    if uid is None:
+        return
+    try:
+        await get_repo(context).save_fsm(int(uid), state, draft)
+    except Exception:  # pragma: no cover - DB/network errors
+        pass
+
+
+async def fsm_clear(context: ContextTypes.DEFAULT_TYPE,
+                    user_id: int | None = None) -> None:
+    """Reset the user back to MAIN_MENU and clear the draft in the DB."""
+    await fsm_set(context, OrderState.MAIN_MENU, {}, user_id=user_id)
+
+
+# ---------------------------------------------------------------------------
 # Error / UX helpers (section 25)
 # ---------------------------------------------------------------------------
 def ux_error(message: str) -> str:

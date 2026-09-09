@@ -38,6 +38,13 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(255), default="")
     first_name: Mapped[str] = mapped_column(String(255), default="")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # --- FSM persistence (serverless-safe) ---
+    # Vercel serverless has no in-memory state between function invocations, so
+    # the interactive flow state + current draft are persisted here. `state`
+    # holds the FSM step (e.g. WAITING_FOR_QUANTITY); `draft_json` holds the
+    # JSON-encoded order draft (platform, service_id, quantity, ...).
+    state: Mapped[str] = mapped_column(String(64), default="MAIN_MENU")
+    draft_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
