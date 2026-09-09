@@ -9,8 +9,11 @@ Handles:
 - GET / - Health check endpoint (returns "OK")
 - POST /webhook - Telegram webhook endpoint for processing updates
 """
+import asyncio
 import json
 import logging
+import sys
+import traceback
 from typing import Any, Dict
 
 from bot.config import get_settings
@@ -22,8 +25,12 @@ from bot.services.traffic_provider import get_traffic_provider
 from telegram import Update
 from telegram.ext import Application
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging to stderr for Vercel
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stderr
+)
 logger = logging.getLogger(__name__)
 
 # Global application instance (lazy initialization)
@@ -65,10 +72,25 @@ def _get_application() -> Application:
     return _app
 
 
-def _process_update(update: Update) -> None:
-    """Process a Telegram update using the application instance."""
+async def _process_update_async(update: Update) -> None:
+    """Process a Telegram update asynchronously using the application instance."""
     app = _get_application()
-    app.process_update(update)
+    await app.process_update(update)
+
+
+def _process_update(update: Update) -> None:
+    """Process a Telegram update using the application instance (synchronous wrapper)."""
+    try:
+        # Run the async process_update in a new event loop
+        asyncio.run(_process_update_async(update))
+    except RuntimeError as e:
+        # Handle "Event loop is already running" error
+        if "Event loop is already running" in str(e):
+            # Use the existing event loop
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(_process_update_async(update))
+        else:
+            raise
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -97,12 +119,24 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         body = event.get("body")
         if body:
             try:
+                # Parse JSON from request body
                 update_data = json.loads(body)
-                update = Update.de_json(update_data)
+                
+                # Get the application instance
+                app = _get_application()
+                
+                # Create Update object with bot reference
+                update = Update.de_json(update_data, app.bot)
+                
+                # Process the update
                 _process_update(update)
+                
             except Exception as e:
+                # Log full traceback for debugging
                 logger.error(f"Error processing webhook: {e}")
+                logger.error(traceback.format_exc())
         
+        # Always return 200 OK quickly to avoid webhook timeout
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "text/plain"},
@@ -141,6 +175,7 @@ class WSGIApp:
                     event["body"] = body
             except Exception as e:
                 logger.error(f"Error reading request body: {e}")
+                logger.error(traceback.format_exc())
         
         # Call the handler function
         response = handler(event, None)
