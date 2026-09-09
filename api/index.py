@@ -151,13 +151,17 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     try:
         method = event.get("httpMethod", "GET")
+        # NOTE: On Vercel the internal PATH_INFO/path can be the actual file
+        # path of the serverless function, e.g. "/api/index.py" or "/api/index",
+        # even though Telegram posts to "/webhook". We therefore do NOT restrict
+        # routing to a specific path: the webhook is matched purely by HTTP method.
         raw_path = event.get("path", "/")
-        # Normalize path so a trailing slash does not break routing:
-        # "/webhook/" and "/webhook" are equivalent; "/" stays "/".
+        # Normalize path so a trailing slash does not break any downstream checks.
         path = raw_path.rstrip("/") or "/"
         
-        # Health check endpoint - GET / (only GET; POST here is handled below).
-        if method == "GET" and path == "/":
+        # Health check endpoint - ANY GET returns 200 OK regardless of path
+        # (covers "/", "/webhook", "/api/index.py", health probes, etc.).
+        if method == "GET":
             return {
                 "statusCode": 200,
                 "headers": {"Content-Type": "text/plain"},
@@ -165,9 +169,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             }
         
         # Process webhook POST request. Telegram sends the update as POST, and the
-        # exact path can vary (`/`, `/webhook`, `/webhook/`, or a project-prefixed
-        # path routed by Vercel). To guarantee we NEVER return 405 to Telegram for
-        # an inbound POST, ANY POST is treated as a webhook and acknowledged 200.
+        # exact path can vary (`/`, `/webhook`, `/webhook/`, `/api/index.py`, or a
+        # project-prefixed path routed by Vercel). To guarantee we NEVER return 405
+        # to Telegram for an inbound POST, ANY POST is treated as a webhook and
+        # acknowledged 200.
         if method == "POST":
             body = event.get("body")
             if body:
