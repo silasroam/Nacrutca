@@ -12,3 +12,8 @@ rich==13.7.1
 # It is imported at module load time by the API entry point, so it MUST be pinned
 # explicitly even though python-telegram-bot also depends on it transitively.
 httpx==0.27.2
+
+# asyncpg is the async PostgreSQL driver used by SQLAlchemy's create_async_engine
+# in production (Vercel/Neon). The repo/store layer always uses async engines, so
+# the DATABASE_URL must be postgresql+asyncpg://... in production.
+asyncpg==0.31.0
