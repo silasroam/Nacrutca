@@ -151,7 +151,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     try:
         method = event.get("httpMethod", "GET")
-        path = event.get("path", "/")
+        raw_path = event.get("path", "/")
+        # Normalize path so a trailing slash does not break routing:
+        # "/webhook/" and "/webhook" are equivalent; "/" stays "/".
+        path = raw_path.rstrip("/") or "/"
         
         # Health check endpoint - GET /
         if method == "GET" and path == "/":
@@ -161,7 +164,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 "body": "OK"
             }
         
-        # Process webhook POST request - POST /webhook
+        # Process webhook POST request - POST /webhook (with or without trailing
+        # slash). A POST here must NEVER return 405 — Telegram expects 200.
         if method == "POST" and path == "/webhook":
             body = event.get("body")
             if body:
