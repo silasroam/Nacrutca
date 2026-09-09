@@ -91,15 +91,15 @@ async def _ensure_database_ready() -> None:
 
     The webhook path (unlike ``bot/main._run_bot``) must ALSO ensure the DB
     schema exists, otherwise a cold serverless instance hits ``/start`` before
-    any ``Repository.init()`` has run and ``upsert_user`` fails with e.g.::
+    any schema creation has run and ``upsert_user`` fails with e.g.::
 
         sqlalchemy.exc.ProgrammingError: relation "users" does not exist
 
     We run this lazily, guarded by a module flag, and use the same idempotent
-    init that ``_run_bot`` uses (``create_all(checkfirst=True)`` + idempotent
-    ``seed_default_services``). The exception is re-raised so the caller knows
-    the schema isn't ready yet (the next request will retry, since the flag is
-    only set on success), rather than silently masking the failure.
+    init that ``_run_bot`` uses: ``ensure_schema()`` (create_all(checkfirst=True))
+    + idempotent ``seed_default_services``. The exception is re-raised so the
+    caller knows the schema isn't ready yet (the next request will retry, since
+    the flag is only set on success), rather than silently masking the failure.
     """
     global _db_initialized
 
@@ -108,7 +108,7 @@ async def _ensure_database_ready() -> None:
 
     repo = _get_application().bot_data["repo"]
     try:
-        await repo.init()
+        await repo.ensure_schema()
         await pricing_svc.seed_default_services(repo)
         _db_initialized = True
         logger.info("Database schema ensured and default services seeded")

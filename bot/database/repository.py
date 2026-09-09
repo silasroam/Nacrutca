@@ -84,15 +84,27 @@ class Repository:
             self._engine, expire_on_commit=False
         )
 
-    async def init(self) -> None:
-        """Create tables. In production use alembic migrations.
+    async def ensure_schema(self) -> None:
+        """Create all tables if they do not exist yet (idempotent).
 
+        Runs ``Base.metadata.create_all`` through an async engine via
+        ``conn.run_sync``. Used on app startup so a cold serverless instance
+        never hits a handler before the schema exists.
+        """
+        async with self._engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database schema ensured via create_all (engine=%s)",
+                    self._engine.dialect.name)
+
+    async def init(self) -> None:
+        """Ensure schema and run SQLite additive migrations.
+
+        For production (Postgres/Neon) ``create_all`` is enough and idempotent.
         For SQLite we also run lightweight additive migrations so the existing
         `traffic_bot.db` keeps working after new fields are introduced (e.g. the
         crypto invoice columns). New columns are added idempotently.
         """
-        async with self._engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        await self.ensure_schema()
         if self._engine.dialect.name == "sqlite":
             await self._migrate_sqlite()
         logger.info("Database schema ensured (SQLite mode).")
