@@ -57,7 +57,18 @@ def _get_application() -> Application:
     if _app is None:
         settings = get_settings()
         
-        # Initialize repository
+        # Fail fast with a clear message instead of letting ApplicationBuilder
+        # raise a confusing low-level error (or, worse, crash the cold module
+        # import on Vercel). This is a *lazy* check: it only runs on the first
+        # webhook call, never at module import time.
+        if not settings.bot_token or settings.bot_token == "your_telegram_bot_token_here":
+            raise RuntimeError(
+                "BOT_TOKEN is not set or is invalid. Configure the BOT_TOKEN "
+                "environment variable in Vercel before invoking /webhook."
+            )
+        
+        # Initialize repository (also lazy - the engine is only created here,
+        # not at import time, so a missing DATABASE_URL won't crash the module).
         _repo = Repository(settings.database_url)
         
         # Build the PTB application
@@ -103,52 +114,65 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     
     This is the standard Vercel Python entry point pattern.
     """
-    method = event.get("httpMethod", "GET")
-    path = event.get("path", "/")
-    
-    # Health check endpoint - GET /
-    if method == "GET" and path == "/":
-        return {
-            "statusCode": 200,
-            "headers": {"Content-Type": "text/plain"},
-            "body": "OK"
-        }
-    
-    # Process webhook POST request - POST /webhook
-    if method == "POST" and path == "/webhook":
-        body = event.get("body")
-        if body:
-            try:
-                # Parse JSON from request body
-                update_data = json.loads(body)
-                
-                # Get the application instance
-                app = _get_application()
-                
-                # Create Update object with bot reference
-                update = Update.de_json(update_data, app.bot)
-                
-                # Process the update
-                _process_update(update)
-                
-            except Exception as e:
-                # Log full traceback for debugging
-                logger.error(f"Error processing webhook: {e}")
-                logger.error(traceback.format_exc())
+    try:
+        method = event.get("httpMethod", "GET")
+        path = event.get("path", "/")
         
-        # Always return 200 OK quickly to avoid webhook timeout
+        # Health check endpoint - GET /
+        if method == "GET" and path == "/":
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "text/plain"},
+                "body": "OK"
+            }
+        
+        # Process webhook POST request - POST /webhook
+        if method == "POST" and path == "/webhook":
+            body = event.get("body")
+            if body:
+                # Parse JSON and build the application OUTSIDE the per-update
+                # try, so that a catastrophic failure here (malformed body,
+                # missing/invalid BOT_TOKEN, DB engine init error) propagates
+                # up to the global 500 JSON handler below instead of being
+                # silently acknowledged with a 200.
+                update_data = json.loads(body)
+                app = _get_application()
+                update = Update.de_json(update_data, app.bot)
+
+                # Only genuine per-update Telegram processing errors (with a
+                # fully-initialized application) are caught here and acknowledged
+                # with a quick 200 so Telegram uses its normal retry semantics.
+                try:
+                    _process_update(update)
+                except Exception as e:
+                    logger.error(f"Error processing webhook: {e}")
+                    logger.error(traceback.format_exc())
+            
+            # Always return 200 OK quickly to avoid webhook timeout
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "text/plain"},
+                "body": "OK"
+            }
+        
+        # Method not allowed or invalid path
         return {
-            "statusCode": 200,
+            "statusCode": 405,
             "headers": {"Content-Type": "text/plain"},
-            "body": "OK"
+            "body": "Method Not Allowed"
         }
-    
-    # Method not allowed or invalid path
-    return {
-        "statusCode": 405,
-        "headers": {"Content-Type": "text/plain"},
-        "body": "Method Not Allowed"
-    }
+    except Exception as e:
+        # Global safety net: log the full traceback to stderr and return a
+        # valid JSON 500 response INSTEAD of crashing the serverless process.
+        # Without this, any uncaught error would abort the Vercel invocation
+        # with FUNCTION_INVOCATION_FAILED and return an unusable HTTP 500 body.
+        print(traceback.format_exc(), file=sys.stderr)
+        logger.error("Unhandled error in handler: %s", e, exc_info=True)
+        return {
+            "statusCode": 500,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"error": str(e)}),
+        }
 
 
 # WSGI application wrapper for Vercel ASGI/WSGI support
@@ -157,39 +181,49 @@ class WSGIApp:
     
     def __call__(self, environ: Dict[str, Any], start_response: Any) -> Any:
         """WSGI callable that delegates to the handler function."""
-        method = environ.get("REQUEST_METHOD", "GET")
-        path = environ.get("PATH_INFO", "/")
-        
-        # Build event dict from WSGI environ
-        event = {
-            "httpMethod": method,
-            "path": path,
-        }
-        
-        # Read request body for POST requests
-        if method == "POST":
-            try:
-                content_length = int(environ.get("CONTENT_LENGTH", 0))
-                if content_length > 0:
-                    body = environ["wsgi.input"].read(content_length).decode("utf-8")
-                    event["body"] = body
-            except Exception as e:
-                logger.error(f"Error reading request body: {e}")
-                logger.error(traceback.format_exc())
-        
-        # Call the handler function
-        response = handler(event, None)
-        
-        # Build WSGI response
-        status_code = response.get("statusCode", 200)
-        headers = response.get("headers", {})
-        body = response.get("body", "")
-        
-        status = f"{status_code} {'OK' if status_code == 200 else 'Error'}"
-        response_headers = [(k, v) for k, v in headers.items()]
-        start_response(status, response_headers)
-        
-        return [body.encode("utf-8")]
+        try:
+            method = environ.get("REQUEST_METHOD", "GET")
+            path = environ.get("PATH_INFO", "/")
+            
+            # Build event dict from WSGI environ
+            event = {
+                "httpMethod": method,
+                "path": path,
+            }
+            
+            # Read request body for POST requests
+            if method == "POST":
+                try:
+                    content_length = int(environ.get("CONTENT_LENGTH", 0))
+                    if content_length > 0:
+                        body = environ["wsgi.input"].read(content_length).decode("utf-8")
+                        event["body"] = body
+                except Exception as e:
+                    logger.error(f"Error reading request body: {e}")
+                    logger.error(traceback.format_exc())
+            
+            # Call the handler function
+            response = handler(event, None)
+            
+            # Build WSGI response
+            status_code = response.get("statusCode", 200)
+            headers = response.get("headers", {})
+            body = response.get("body", "")
+            
+            status = f"{status_code} {'OK' if status_code == 200 else 'Error'}"
+            response_headers = [(k, v) for k, v in headers.items()]
+            start_response(status, response_headers)
+            
+            return [body.encode("utf-8")]
+        except Exception as e:
+            # Global safety net for the WSGI path: log the full traceback to
+            # stderr and return a valid JSON 500 response instead of letting
+            # the exception propagate up and crash the serverless process.
+            print(traceback.format_exc(), file=sys.stderr)
+            logger.error("Unhandled error in WSGIApp: %s", e, exc_info=True)
+            payload = json.dumps({"error": str(e)}).encode("utf-8")
+            start_response("500 Error", [("Content-Type", "application/json")])
+            return [payload]
 
 
 # Export WSGI application for Vercel
