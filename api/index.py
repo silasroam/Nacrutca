@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 # Global application instance (lazy initialization)
 _app: Application = None
 _repo: Repository = None
+_app_initialized: bool = False
 
 
 def _ensure_bot_data(app: Application, repo: Repository, settings) -> None:
@@ -78,14 +79,48 @@ def _get_application() -> Application:
         _ensure_bot_data(_app, _repo, settings)
         _app.bot_data["repo"] = _repo
         
-        logger.info("PTB application initialized")
+        logger.info("PTB application instance created")
     
     return _app
 
 
+async def _ensure_application_running() -> Application:
+    """
+    Return a fully-initialized PTB application.
+
+    python-telegram-bot v21 requires ``Application.initialize()`` (and
+    ``Application.start()`` for handler jobs/updates) to be called ONCE before
+    ``Application.process_update()``. Without it, ``process_update`` raises::
+
+        RuntimeError: This Application was not initialized via `Application.initialize`!
+
+    That error was being swallowed by the webhook handler and acknowledged with
+    a 200, so Telegram never redelivered and the bot silently ignored updates.
+
+    We run the (async) lifecycle here exactly once, guarded by a module flag,
+    because the application is a long-lived global reused between requests.
+    """
+    global _app_initialized
+
+    app = _get_application()
+
+    # The module-level flag is the single source of truth: the application is a
+    # long-lived global reused across requests, so the (async) lifecycle must be
+    # run exactly once. ``running`` is a real attribute on Application in v21;
+    # there is no public ``initialized`` attribute to inspect, hence the flag.
+    if not _app_initialized:
+        if not app.running:
+            await app.initialize()
+            await app.start()
+        _app_initialized = True
+        logger.info("PTB application lifecycle initialized and started")
+
+    return app
+
+
 async def _process_update_async(update: Update) -> None:
     """Process a Telegram update asynchronously using the application instance."""
-    app = _get_application()
+    app = await _ensure_application_running()
     await app.process_update(update)
 
 
