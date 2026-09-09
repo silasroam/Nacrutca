@@ -1,3 +1,8 @@
+[project]
+name = "nacrutca-bot"
+version = "0.1.0"
+dependencies = []
+
 [tool.vercel]
 entrypoint = "api/index.py"
 
