@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from .. import config
 from .models import Base, Order, Payment, Service, User, utcnow
@@ -79,7 +80,18 @@ class Repository:
     def __init__(self, database_url: str | None = None) -> None:
         url = database_url or config.get_settings().database_url
         url = _normalize_database_url(url)
-        self._engine = create_async_engine(url, echo=False)
+        # On serverless (Vercel) each request may run on a DIFFERENT asyncio
+        # event loop, but the engine/pool is a process-wide singleton reused
+        # between requests. asyncpg connections pooled from a previous loop then
+        # fail with "attached to a different loop" / "another operation is in
+        # progress". NullPool closes every connection after use, so no connection
+        # ever outlives the event loop it was created on. (SQLite is unaffected.)
+        if url.startswith("postgres"):
+            self._engine = create_async_engine(
+                url, echo=False, poolclass=NullPool
+            )
+        else:
+            self._engine = create_async_engine(url, echo=False)
         self._session_factory = async_sessionmaker(
             self._engine, expire_on_commit=False
         )

@@ -244,16 +244,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 # silently acknowledged with a 200.
                 update_data = json.loads(body)
                 app = _get_application()
-
-                # GUARANTEE the DB schema exists BEFORE processing the update.
-                # This runs blocked inside the current request (not a detached
-                # task), so on serverless the schema is definitely created and
-                # the /start handler's `upsert_user` finds the `users` table.
-                # An init failure is a real error -> let it reach the 500/200
-                # path rather than silently proceeding without tables.
-                _ensure_database_ready_sync()
-
                 update = Update.de_json(update_data, app.bot)
+
+                # NOTE: DB schema + seed are ensured INSIDE _process_update_async
+                # (via _ensure_application_running -> _ensure_database_ready) in
+                # the SAME event loop as process_update, so asyncpg/SQLAlchemy
+                # connections stay on one loop. We must NOT also run a separate
+                # asyncio.run() here: doing so would create a second event loop
+                # and cause asyncpg "attached to a different loop" / "another
+                # operation is in progress" errors on serverless.
 
                 # Only genuine per-update Telegram processing errors (with a
                 # fully-initialized application) are caught here and acknowledged
