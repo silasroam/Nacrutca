@@ -49,11 +49,18 @@ logger = logging.getLogger(__name__)
 _URL_RE = re.compile(r"^https?://[^\s]+$")
 
 
+def _uid(update: Update) -> int | None:
+    """Stable serverless-safe user id from the Update (never the context)."""
+    user = update.effective_user
+    return getattr(user, "id", None) if user is not None else None
+
+
 async def buy_traffic(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await answer_query(query)
-    await fsm_clear(context)
-    await fsm_set(context, OrderState.PLATFORM_SELECTION, {})
+    uid = _uid(update)
+    await fsm_clear(context, user_id=uid)
+    await fsm_set(context, OrderState.PLATFORM_SELECTION, {}, user_id=uid)
     await safe_answer(
         context, update.effective_chat.id,
         "🌐 <b>Выбор платформы</b>\n\n"
@@ -85,7 +92,8 @@ async def platform_selected(update: Update, context: CallbackContext) -> None:
         )
         return
 
-    await fsm_set(context, OrderState.SERVICE_SELECTION, {"platform": platform})
+    await fsm_set(context, OrderState.SERVICE_SELECTION, {"platform": platform},
+                  user_id=_uid(update))
     emoji = PLATFORM_EMOJIS.get(platform, "")
     name = PLATFORM_NAMES.get(platform, platform)
     await safe_answer(
@@ -99,7 +107,7 @@ async def platform_selected(update: Update, context: CallbackContext) -> None:
 async def platform_back(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await answer_query(query)
-    await fsm_clear(context)
+    await fsm_clear(context, user_id=_uid(update))
     await buy_traffic(update, context)
 
 
@@ -120,12 +128,13 @@ async def service_selected(update: Update, context: CallbackContext) -> None:
     # Persist the selected service + current platform into the DB draft so the
     # LATER text-input step ("Введите количество…") can restore them on a fresh
     # serverless instance.
-    _, prev_draft = await fsm_get(context)
+    uid = _uid(update)
+    _, prev_draft = await fsm_get(context, user_id=uid)
     platform = prev_draft.get("platform", "")
     await fsm_set(context, OrderState.WAITING_FOR_QUANTITY, {
         "service_id": svc.id,
         "platform": platform,
-    })
+    }, user_id=uid)
 
     settings = context.bot_data["settings"]
     low = svc.min_quantity or settings.min_quantity
@@ -161,12 +170,13 @@ async def quantity_input(update: Update, context: CallbackContext) -> None:
 
     # Restore the pre-selected service + platform from the DB draft (survives
     # a serverless cold start between the service-selection button and this text).
-    _, draft = await fsm_get(context)
+    uid = _uid(update)
+    _, draft = await fsm_get(context, user_id=uid)
     svc_id = draft.get("service_id")
     repo = get_repo(context)
     svc: Service | None = await repo.get_service(svc_id) if svc_id else None
     if svc is None:
-        await fsm_clear(context)
+        await fsm_clear(context, user_id=uid)
         await safe_answer(
             context, update.effective_chat.id,
             "Сессия истекла. Начните заново — /start",
@@ -190,7 +200,7 @@ async def quantity_input(update: Update, context: CallbackContext) -> None:
 
     draft["quantity"] = quantity
     if svc.requires_url:
-        await fsm_set(context, OrderState.WAITING_FOR_URL, draft)
+        await fsm_set(context, OrderState.WAITING_FOR_URL, draft, user_id=uid)
         await safe_answer(
             context, update.effective_chat.id,
             "🔗 <b>Укажите ссылку</b>\n\n"
@@ -199,7 +209,7 @@ async def quantity_input(update: Update, context: CallbackContext) -> None:
         )
     else:
         draft.pop("target_url", None)
-        await fsm_set(context, OrderState.ORDER_CONFIRMATION, draft)
+        await fsm_set(context, OrderState.ORDER_CONFIRMATION, draft, user_id=uid)
         await show_confirmation(update, context)
 
 
@@ -210,7 +220,8 @@ async def url_input(update: Update, context: CallbackContext) -> None:
     user_text = (update.effective_message.text or "").strip()
 
     # Read the persisted draft (service_id, quantity) from the DB.
-    _, draft = await fsm_get(context)
+    uid = _uid(update)
+    _, draft = await fsm_get(context, user_id=uid)
     if not _URL_RE.match(user_text) or len(user_text) > 2000:
         await safe_answer(
             context, update.effective_chat.id,
@@ -220,7 +231,7 @@ async def url_input(update: Update, context: CallbackContext) -> None:
         )
         return
     draft["target_url"] = user_text
-    await fsm_set(context, OrderState.ORDER_CONFIRMATION, draft)
+    await fsm_set(context, OrderState.ORDER_CONFIRMATION, draft, user_id=uid)
     await show_confirmation(update, context)
 
 
@@ -228,24 +239,25 @@ async def url_input(update: Update, context: CallbackContext) -> None:
 # Confirmation screen (section 10)
 # ---------------------------------------------------------------------------
 async def show_confirmation(update: Update, context: CallbackContext) -> None:
-    _, draft = await fsm_get(context)
+    uid = _uid(update)
+    _, draft = await fsm_get(context, user_id=uid)
     svc_id = draft.get("service_id")
     quantity: int = draft.get("quantity")
     if not svc_id or not quantity:
-        await fsm_clear(context)
+        await fsm_clear(context, user_id=uid)
         await safe_answer(context, update.effective_chat.id, "Начните заново — /start")
         return
     repo = get_repo(context)
     svc: Service | None = await repo.get_service(svc_id)
     if svc is None:
-        await fsm_clear(context)
+        await fsm_clear(context, user_id=uid)
         await safe_answer(context, update.effective_chat.id, "Начните заново — /start")
         return
 
     platform = draft.get("platform", "")
     emoji = svc.emoji or "•"
     total = quantity * svc.price_per_1000 / 1000.0
-    await fsm_set(context, OrderState.ORDER_CONFIRMATION, draft)
+    await fsm_set(context, OrderState.ORDER_CONFIRMATION, draft, user_id=uid)
     text = (
         f"{emoji} <b>{PLATFORM_NAMES.get(platform, platform)} — {svc.name}</b>\n\n"
         f"💰 <b>Подтверждение заказа</b>\n\n"
@@ -263,11 +275,12 @@ async def confirm_purchase(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await answer_query(query)
 
-    _, draft = await fsm_get(context)
+    uid = _uid(update)
+    _, draft = await fsm_get(context, user_id=uid)
     svc_id = draft.get("service_id")
     quantity: int | None = draft.get("quantity")
     if not svc_id or not quantity:
-        await fsm_clear(context)
+        await fsm_clear(context, user_id=uid)
         await safe_answer(
             context, update.effective_chat.id,
             "❌ Заявка устарела. Начните заново — /start",
@@ -276,14 +289,14 @@ async def confirm_purchase(update: Update, context: CallbackContext) -> None:
     repo = get_repo(context)
     svc = await repo.get_service(svc_id)
     if svc is None:
-        await fsm_clear(context)
+        await fsm_clear(context, user_id=uid)
         await safe_answer(
             context, update.effective_chat.id,
             "❌ Заявка устарела. Начните заново — /start",
         )
         return
 
-    await fsm_set(context, OrderState.PAYMENT_SELECTION, draft)
+    await fsm_set(context, OrderState.PAYMENT_SELECTION, draft, user_id=uid)
     await safe_answer(
         context, update.effective_chat.id,
         "💳 <b>Способ оплаты</b>\n\n"
@@ -297,7 +310,7 @@ async def confirm_purchase(update: Update, context: CallbackContext) -> None:
 # ---------------------------------------------------------------------------
 async def quantity_or_url_input(update: Update, context: CallbackContext) -> None:
     # Read the FSM state from the DB (serverless-safe) instead of MemoryPersistence.
-    state, _ = await fsm_get(context)
+    state, _ = await fsm_get(context, user_id=_uid(update))
     if state == OrderState.WAITING_FOR_QUANTITY:
         await quantity_input(update, context)
     elif state == OrderState.WAITING_FOR_URL:
