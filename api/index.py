@@ -156,7 +156,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # "/webhook/" and "/webhook" are equivalent; "/" stays "/".
         path = raw_path.rstrip("/") or "/"
         
-        # Health check endpoint - GET /
+        # Health check endpoint - GET / (only GET; POST here is handled below).
         if method == "GET" and path == "/":
             return {
                 "statusCode": 200,
@@ -164,9 +164,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 "body": "OK"
             }
         
-        # Process webhook POST request - POST /webhook (with or without trailing
-        # slash). A POST here must NEVER return 405 — Telegram expects 200.
-        if method == "POST" and path == "/webhook":
+        # Process webhook POST request. Telegram sends the update as POST, and the
+        # exact path can vary (`/`, `/webhook`, `/webhook/`, or a project-prefixed
+        # path routed by Vercel). To guarantee we NEVER return 405 to Telegram for
+        # an inbound POST, ANY POST is treated as a webhook and acknowledged 200.
+        if method == "POST":
             body = event.get("body")
             if body:
                 # Parse JSON and build the application OUTSIDE the per-update
