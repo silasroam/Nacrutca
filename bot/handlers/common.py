@@ -79,16 +79,25 @@ def ensure_draft(context: ContextTypes.DEFAULT_TYPE) -> dict:
 # multi-step purchase flow.
 # ---------------------------------------------------------------------------
 async def _fsm_user_id(context: ContextTypes.DEFAULT_TYPE) -> int | None:
-    # The chat id is a reliable stable key for a private chat; for group chats
-    # you should use the effective_user id. We pick the user id when available.
-    update = getattr(context, "update", None)
-    user = update.effective_user if update is not None else None
-    if user is not None and user.id is not None:
-        return user.id
-    chat_id = None
-    if update is not None and update.effective_chat is not None:
-        chat_id = update.effective_chat.id
-    return chat_id
+    # `context.effective_user` is the correct way to get the user in
+    # python-telegram-bot v21 (NOT `context.update`, which is not an Update).
+    user = getattr(context, "effective_user", None)
+    if user is not None:
+        try:
+            uid = user.id
+            if uid is not None:
+                return int(uid)
+        except Exception:  # pragma: no cover
+            pass
+    chat = getattr(context, "effective_chat", None)
+    if chat is not None:
+        try:
+            cid = chat.id
+            if cid is not None:
+                return int(cid)
+        except Exception:  # pragma: no cover
+            pass
+    return None
 
 
 async def fsm_get(context: ContextTypes.DEFAULT_TYPE, user_id: int | None = None
