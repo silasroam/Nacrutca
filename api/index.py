@@ -108,6 +108,10 @@ async def _ensure_database_ready() -> None:
 
     repo = _get_application().bot_data["repo"]
     try:
+        # create_all + seed are idempotent and must COMPLETE before the handler
+        # touches the DB. They run inside the SAME request (awaited), never as
+        # a fire-and-forget background task - on serverless the process would be
+        # torn down and the schema would be lost.
         await repo.ensure_schema()
         await pricing_svc.seed_default_services(repo)
         _db_initialized = True
@@ -115,6 +119,26 @@ async def _ensure_database_ready() -> None:
     except Exception as exc:  # pragma: no cover - DB/network errors
         logger.error("DB init failed (will retry next request): %s", exc, exc_info=True)
         raise
+
+
+def _ensure_database_ready_sync() -> None:
+    """Synchronously run ``_ensure_database_ready`` within the current request.
+
+    Called from the webhook ``handler`` BEFORE processing the update, so the
+    schema is guaranteed to exist by the time ``/start`` (or any handler) writes
+    to the DB. Because this is awaited in the main request path (not a detached
+    asyncio task), the serverless process cannot be torn down before it finishes.
+    """
+    if _db_initialized:
+        return
+    try:
+        asyncio.run(_ensure_database_ready())
+    except RuntimeError as e:
+        if "Event loop is already running" in str(e):
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(_ensure_database_ready())
+        else:
+            raise
 
 
 async def _ensure_application_running() -> Application:
@@ -220,6 +244,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 # silently acknowledged with a 200.
                 update_data = json.loads(body)
                 app = _get_application()
+
+                # GUARANTEE the DB schema exists BEFORE processing the update.
+                # This runs blocked inside the current request (not a detached
+                # task), so on serverless the schema is definitely created and
+                # the /start handler's `upsert_user` finds the `users` table.
+                # An init failure is a real error -> let it reach the 500/200
+                # path rather than silently proceeding without tables.
+                _ensure_database_ready_sync()
+
                 update = Update.de_json(update_data, app.bot)
 
                 # Only genuine per-update Telegram processing errors (with a
