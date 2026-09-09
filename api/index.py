@@ -20,6 +20,7 @@ from bot.config import get_settings
 from bot.database.repository import Repository
 from bot.handlers.common import APP_KEY, AppBundle
 from bot.main import build_application
+from bot.services import pricing as pricing_svc
 from bot.services.payments import provider_for
 from bot.services.traffic_provider import get_traffic_provider
 from telegram import Update
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 _app: Application = None
 _repo: Repository = None
 _app_initialized: bool = False
+_db_initialized: bool = False
 
 
 def _ensure_bot_data(app: Application, repo: Repository, settings) -> None:
@@ -84,6 +86,37 @@ def _get_application() -> Application:
     return _app
 
 
+async def _ensure_database_ready() -> None:
+    """Create the schema and seed default services exactly once.
+
+    The webhook path (unlike ``bot/main._run_bot``) must ALSO ensure the DB
+    schema exists, otherwise a cold serverless instance hits ``/start`` before
+    any ``Repository.init()`` has run and ``upsert_user`` fails with e.g.::
+
+        sqlalchemy.exc.ProgrammingError: relation "users" does not exist
+
+    We run this lazily, guarded by a module flag, and use the same idempotent
+    init that ``_run_bot`` uses (``create_all(checkfirst=True)`` + idempotent
+    ``seed_default_services``). The exception is re-raised so the caller knows
+    the schema isn't ready yet (the next request will retry, since the flag is
+    only set on success), rather than silently masking the failure.
+    """
+    global _db_initialized
+
+    if _db_initialized:
+        return
+
+    repo = _get_application().bot_data["repo"]
+    try:
+        await repo.init()
+        await pricing_svc.seed_default_services(repo)
+        _db_initialized = True
+        logger.info("Database schema ensured and default services seeded")
+    except Exception as exc:  # pragma: no cover - DB/network errors
+        logger.error("DB init failed (will retry next request): %s", exc, exc_info=True)
+        raise
+
+
 async def _ensure_application_running() -> Application:
     """
     Return a fully-initialized PTB application.
@@ -114,6 +147,10 @@ async def _ensure_application_running() -> Application:
             await app.start()
         _app_initialized = True
         logger.info("PTB application lifecycle initialized and started")
+
+    # Ensure DB schema + default pricing exist before any update (notably the
+    # /start handler, which upserts into `users`). This runs once per process.
+    await _ensure_database_ready()
 
     return app
 
