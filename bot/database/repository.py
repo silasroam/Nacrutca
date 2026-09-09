@@ -33,11 +33,52 @@ class OrderNotFoundError(Exception):
     pass
 
 
+def _normalize_database_url(url: str) -> str:
+    """Force an async driver into the URL where possible.
+
+    The whole storage layer runs on SQLAlchemy *async* engines, so a bare
+    ``postgresql://`` URL (or one with a sync-only driver like ``psycopg2``)
+    would make ``create_async_engine`` try to import a sync DBAPI module
+    (e.g. ``psycopg2``) that is not installed, raising e.g.::
+
+        ModuleNotFoundError: No module named 'psycopg2'
+
+    That unhandled error used to surface as Vercel ``FUNCTION_INVOCATION_FAILED``.
+    This normalizer rewrites common sync postgres forms to the async ``asyncpg``
+    driver and neutralizes ``channel_binding=require`` (psycopg-only) and
+    ``sslmode`` → ``ssl`` so the URL works with ``asyncpg``.
+    """
+    if not url:
+        return url
+
+    # Rewrite drive prefix for PostgreSQL to the async driver.
+    if url.startswith("postgresql://") or url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    # Drop psycopg2 channel_binding (asyncpg doesn't support it). It can appear
+    # anywhere in the query string, so handle all three positions (first/mid/last).
+    # Important: handle the "followed by &" form BEFORE the generic "?x" form so
+    # a query like `?channel_binding=require&ssl=require` doesn't leave a stray
+    # leading `&`.
+    url = url.replace("?channel_binding=require&", "?")
+    url = url.replace("&channel_binding=require", "")
+    url = url.replace("?channel_binding=require", "?")
+
+    # asyncpg uses ssl=..., not sslmode=... .
+    url = url.replace("?sslmode=require", "?ssl=require").replace(
+        "?sslmode=prefer", "?ssl=prefer"
+    )
+
+    return url
+
+
 class Repository:
     """Async repository wrapping all persistence for the bot."""
 
     def __init__(self, database_url: str | None = None) -> None:
         url = database_url or config.get_settings().database_url
+        url = _normalize_database_url(url)
         self._engine = create_async_engine(url, echo=False)
         self._session_factory = async_sessionmaker(
             self._engine, expire_on_commit=False
