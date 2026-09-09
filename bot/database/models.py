@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -30,7 +31,10 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    telegram_user_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    # Telegram IDs exceed the signed 32-bit int range (max 2^31-1 = 2147483647),
+    # e.g. 7969090536. It MUST be a BIGINT on Postgres, otherwise inserts fail
+    # with DataError "value out of int32 range".
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     username: Mapped[str] = mapped_column(String(255), default="")
     first_name: Mapped[str] = mapped_column(String(255), default="")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -72,7 +76,8 @@ class Order(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     # Human friendly public id e.g. #1842 -> stored as integer 1842
     order_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
-    telegram_user_id: Mapped[int] = mapped_column(Integer, index=True)
+    # BIGINT - Telegram IDs exceed int32 range (e.g. 7969090536).
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     username: Mapped[str] = mapped_column(String(255), default="")
 
     platform: Mapped[str] = mapped_column(String(50))
@@ -123,7 +128,8 @@ class Payment(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     payment_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     order_id: Mapped[int] = mapped_column(Integer, index=True)
-    telegram_user_id: Mapped[int] = mapped_column(Integer, index=True)
+    # BIGINT - Telegram IDs exceed int32 range (e.g. 7969090536).
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     method: Mapped[str] = mapped_column(String(20))
     provider: Mapped[str] = mapped_column(String(50))
     amount: Mapped[float] = mapped_column(Float)
