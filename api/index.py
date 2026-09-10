@@ -40,6 +40,56 @@ _repo: Repository = None
 _app_initialized: bool = False
 _db_initialized: bool = False
 
+# A single, process-wide asyncio loop that is created ONCE and NEVER closed.
+#
+# Why: the long-lived Application / Repository singletons are reused across Vercel
+# invocations, but each request previously ran `asyncio.run(...)`, which creates a
+# brand-new loop and CLOSES it on return. That closed the loop that PTB's
+# `Application.initialize()`/`start()` had bound the app to, so the next request's
+# `process_update()` failed silently on the dead loop -> the bot never responded
+# even though the webhook returned 200. NullPool only protects the DB pool; it
+# cannot rebind PTB's loop-bound internals.
+def _run_async(awaitable) -> None:
+    """Run `awaitable` on the persistent loop, blocking until it completes.
+
+    The loop lives in a daemon thread so it outlives any single request; Vercel
+    cold-starts just create the loop afresh. We never close it, so every asyncpg
+    connection and every PTB lifecycle artifact stays on the same loop.
+
+    We use the module-level ``asyncio.run_coroutine_threadsafe`` (not the loop
+    method): on Python 3.13 the Windows loop classes dropped the
+    ``run_coroutine_threadsafe`` method, while the module-level function only
+    needs ``call_soon_threadsafe`` and works on any loop running in another thread.
+    """
+    _loop_lock.acquire()
+    try:
+        if _loop is None or _loop.is_closed():
+            _init_loop()
+        return asyncio.run_coroutine_threadsafe(awaitable, _loop).result()
+    finally:
+        _loop_lock.release()
+
+
+_loop_lock = __import__("threading").Lock()
+_loop = None
+
+
+def _init_loop() -> None:
+    """Start the persistent background event loop exactly once.
+
+    Uses a SelectorEventLoop explicitly: on Python 3.13 (used by Vercel and this
+    environment) the default ProactorEventLoop on Windows lacks the thread-safe
+    ``run_coroutine_threadsafe`` method, which our synchronous wrapper relies on.
+    SelectorEventLoop provides it.
+    """
+    global _loop
+    import threading
+
+    _loop = asyncio.SelectorEventLoop()
+    t = threading.Thread(target=_loop.run_forever, name="persistent-asyncio-loop", daemon=True)
+    t.daemon = True
+    t.start()
+
 
 def _ensure_bot_data(app: Application, repo: Repository, settings) -> None:
     """Ensure bot data is properly set up."""
@@ -126,19 +176,12 @@ def _ensure_database_ready_sync() -> None:
 
     Called from the webhook ``handler`` BEFORE processing the update, so the
     schema is guaranteed to exist by the time ``/start`` (or any handler) writes
-    to the DB. Because this is awaited in the main request path (not a detached
-    asyncio task), the serverless process cannot be torn down before it finishes.
+    to the DB. It runs on the persistent process-wide loop so the async engine
+    and PTB lifecycles stay on a single, never-closed loop (see ``_run_async``).
     """
     if _db_initialized:
         return
-    try:
-        asyncio.run(_ensure_database_ready())
-    except RuntimeError as e:
-        if "Event loop is already running" in str(e):
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(_ensure_database_ready())
-        else:
-            raise
+    _run_async(_ensure_database_ready())
 
 
 async def _ensure_application_running() -> Application:
@@ -186,18 +229,14 @@ async def _process_update_async(update: Update) -> None:
 
 
 def _process_update(update: Update) -> None:
-    """Process a Telegram update using the application instance (synchronous wrapper)."""
-    try:
-        # Run the async process_update in a new event loop
-        asyncio.run(_process_update_async(update))
-    except RuntimeError as e:
-        # Handle "Event loop is already running" error
-        if "Event loop is already running" in str(e):
-            # Use the existing event loop
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(_process_update_async(update))
-        else:
-            raise
+    """Process a Telegram update using the application instance (synchronous wrapper).
+
+    Runs on the single, never-closed process loop (see ``_run_async``). This is the
+    critical fix: the previous ``asyncio.run`` closed the loop PTB's Application was
+    bound to on every request, so subsequent ``process_update`` calls silently failed
+    and the bot never responded.
+    """
+    _run_async(_process_update_async(update))
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
