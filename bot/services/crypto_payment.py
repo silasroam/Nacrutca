@@ -26,6 +26,7 @@ from decimal import Decimal
 from ..database.repository import Repository
 from . import crypto_rates as rates
 from .blockchain import get_checker
+from .orders import order_code
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,7 @@ async def verify_crypto_payment(repo: Repository, *, order,
         status="paid",
         text=(
             "✅ Оплата подтверждена\n\n"
-            f"Заказ: <b>#{order.order_id}</b>\n"
+            f"Заказ: <b>{order_code(order)}</b>\n"
             f"Сумма: {rates.format_decimal(result.amount)} {code}\n\n"
             "Оплата успешно получена.\n\n"
             "🟡 Заказ передан в обработку."

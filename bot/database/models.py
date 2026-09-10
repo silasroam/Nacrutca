@@ -81,8 +81,14 @@ class Order(Base):
     __tablename__ = "orders"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    # Human friendly public id e.g. #1842 -> stored as integer 1842
+    # Internal, always-unique DB key. It is REQUIRED to never be reused while the
+    # order row exists (rows + payments reference it). It is deliberately NOT shown
+    # to users anymore.
     order_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    # Public, user-facing order code (short random hash). Shown instead of #order_id
+    # in every message. Bound to the same 30-min invoice expiry (expires_at): once the
+    # invoice expires, this order code can no longer be paid.
+    public_hash: Mapped[str] = mapped_column(String(16), default="", index=True)
     # BIGINT - Telegram IDs exceed int32 range (e.g. 7969090536).
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     username: Mapped[str] = mapped_column(String(255), default="")

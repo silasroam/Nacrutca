@@ -16,6 +16,7 @@ from telegram.ext import CallbackContext, CommandHandler, CallbackQueryHandler
 from ..keyboards import constants as C
 from ..keyboards import statistics as kb_stats
 from ..states.order import OrderState
+from ..services.orders import order_code
 from .common import (
     get_repo,
     set_state,
@@ -236,7 +237,7 @@ async def admin_set_status(update: Update, context: CallbackContext) -> None:
     rows = " / ".join(s.capitalize() for s in ORDER_STATUSES)
     await safe_answer(
         context, update.effective_chat.id,
-        f"🛠 Изменение статуса заказа <b>#{order_id}</b>\n\n"
+        f"🛠 Изменение статуса заказа <b>{order_code(order)}</b>\n\n"
         f"Текущий: {order.order_status}\n\n"
         f"Введите один из статусов:\n{rows}",
     )
@@ -261,7 +262,7 @@ async def typed_order_status(update, context) -> None:  # noqa: ANN001
     reset_flow(context)
     await safe_answer(
         context, update.effective_chat.id,
-        f"✅ Статус заказа #{order_id} изменён на «{raw}».",
+        f"✅ Статус заказа {order_code(order)} изменён на «{raw}».",
     )
 
 

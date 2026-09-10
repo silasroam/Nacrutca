@@ -28,7 +28,7 @@ from ..services.stars_payment import (
     order_id_from_payload as stars_order_from_payload,
     payload_for_order as stars_payload,
 )
-from ..services.orders import fmt_price
+from ..services.orders import fmt_price, order_code
 from ..states.order import OrderState
 from ..database.models import Order, Service
 from .common import (
@@ -133,7 +133,7 @@ async def send_stars_invoice(update: Update, context: CallbackContext,
     await safe_answer(
         context, chat_id,
         "⭐ <b>Оплата звёздами</b>\n\n"
-        f"Заказ: <b>#{order.order_id}</b>\n"
+        f"Заказ: <b>{order_code(order)}</b>\n"
         f"💰 К оплате: <b>{fmt_price(order.total_price)} ₽</b>\n"
         f"⭐ Стоимость: <b>{stars_total} ⭐</b>\n\n"
         "Курс:\n130 ₽ = 100 ⭐\n\n"
@@ -220,7 +220,7 @@ async def crypto_wallet_selected(update: Update, context: CallbackContext) -> No
 
     text = (
         "💳 Оплата криптовалютой\n\n"
-        f"Заказ: <b>#{order.order_id}</b>\n"
+        f"Заказ: <b>{order_code(order)}</b>\n"
         f"💰 К оплате: <b>{fmt_price(order.total_price)} ₽</b>\n"
         f"{emoji} Валюта: <b>{name}</b>\n\n"
         f"Курс:\n1 {code} = {rate} ₽\n\n"
@@ -293,11 +293,11 @@ async def crypto_cancel(update: Update, context: CallbackContext) -> None:
     updated = await repo.cancel_crypto_order(order_id)
     markup = None
     if updated and updated.payment_status == "cancelled":
-        text = f"❌ Оплата отменена\n\nЗаказ #{order_id} отменён."
+        text = f"❌ Оплата отменена\n\nЗаказ {order_code(order)} отменён."
     else:
         st = updated.payment_status if updated else "?"
         text = (
-            f"Заказ #{order_id}: его уже нельзя отменить "
+            f"Заказ {order_code(order)}: его уже нельзя отменить "
             f"(текущий статус: {st})."
         )
         markup = kb_orders.order_actions(order_id)
@@ -437,7 +437,7 @@ async def notify_paid(context: CallbackContext, chat_id: int, order_id: int) -> 
     await safe_answer(
         context, chat_id,
         f"✅ <b>Оплата подтверждена</b>\n\n"
-        f"Заказ <b>#{order.order_id}</b> передан в обработку.\n"
+        f"Заказ <b>{order_code(order)}</b> передан в обработку.\n"
         f"Статус: {emoji}",
         reply_markup=kb_orders.order_actions(order.order_id),
     )
@@ -470,14 +470,14 @@ async def stars_pay_click(update: Update, context: CallbackContext) -> None:
     try:
         await context.bot.send_invoice(
             chat_id=user.id,
-            title=f"Заказ #{order.order_id}",
-            description=f"Оплата заказа #{order.order_id} звёздами.",
+            title=f"Заказ {order_code(order)}",
+            description=f"Оплата заказа {order_code(order)} звёздами.",
             payload=payload,
             provider_token="",       # Telegram Stars -> empty provider token
             currency="XTR",          # official Telegram Stars currency
             prices=[
                 LabeledPrice(
-                    label=f"Заказ #{order.order_id}",
+                    label=f"Заказ {order_code(order)}",
                     amount=stars_amount,
                 )
             ],
@@ -507,12 +507,12 @@ async def stars_cancel_click(update: Update, context: CallbackContext) -> None:
         await repo.cancel_crypto_order(order_id)
         await safe_answer(
             context, update.effective_chat.id,
-            f"❌ Оплата отменена\n\nЗаказ #{order_id} отменён.",
+            f"❌ Оплата отменена\n\nЗаказ {order_code(order)} отменён.",
         )
     else:
         await safe_answer(
             context, update.effective_chat.id,
-            f"Заказ #{order_id} уже обработан. Его нельзя отменить.",
+            f"Заказ {order_code(order)} уже обработан. Его нельзя отменить.",
         )
     reset_flow(context)
 

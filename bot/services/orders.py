@@ -87,3 +87,16 @@ def fmt_rate_1k(price: float) -> str:
 def fmt_rate_1000(price: float) -> str:
     """Detailed per-1000 rate used in cards: '300 ₽ / 1 000'."""
     return f"{fmt_price(price)} ₽ / 1 000"
+
+
+def order_code(order) -> str:
+    """Safe user-facing order code.
+
+    Prefers the public random hash (new orders); falls back to the internal id
+    only for legacy rows that were created before the hash column existed, so the
+    UI never breaks on old data.
+    """
+    code = getattr(order, "public_hash", "") or ""
+    if code:
+        return code
+    return f"#{getattr(order, 'order_id', '?')}"

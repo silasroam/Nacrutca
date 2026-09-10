@@ -121,6 +121,7 @@ class Repository:
             await self._migrate_sqlite()
             await self._migrate_sqlite_users()
         elif self._engine.dialect.name == "postgresql":
+            await self._migrate_postgres_orders()
             await self._migrate_postgres_fsm()
         logger.info("Database schema ensured (engine=%s).", self._engine.dialect.name)
 
@@ -138,6 +139,7 @@ class Repository:
             "transaction_hash": '"VARCHAR(255)"',
             "stars_amount": "INTEGER",
             "telegram_payment_charge_id": '"VARCHAR(255)"',
+            "public_hash": '"VARCHAR(16)"',
         }
         async with self._engine.begin() as conn:
             existing = {
@@ -193,6 +195,27 @@ class Repository:
                 if col not in cols:
                     await conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
                     logger.info("Migrated Postgres users.%s (added column)", col)
+
+    async def _migrate_postgres_orders(self) -> None:
+        """Add new columns to the existing Postgres 'orders' table idempotently."""
+        from sqlalchemy import text
+
+        additions = {"public_hash": "VARCHAR(16)"}
+        async with self._engine.begin() as conn:
+            cols = {
+                row[0]
+                for row in (
+                    await conn.execute(text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name='orders'"
+                    ))
+                ).fetchall()
+            }
+            for col, ddl in additions.items():
+                if col not in cols:
+                    await conn.execute(text(f"ALTER TABLE orders ADD COLUMN {col} {ddl}"))
+                    logger.info("Migrated Postgres orders.%s (added column)", col)
+
     async def close(self) -> None:
         await self._engine.dispose()
 
@@ -345,11 +368,33 @@ class Repository:
         base = 256
         return (session_max_id or base - 1) + 1
 
+    async def _next_public_hash(self, session) -> str:
+        """Return a unique public order code (short random hash).
+
+        The code is shown to the user instead of the internal #order_id. It is
+        bound to the order's 30-min invoice expiry (expires_at); it is never shown
+        after the order is finalized. Guarded against the astronomically unlikely
+        collision by retrying.
+        """
+        import secrets
+
+        for _ in range(5):
+            candidate = f"{secrets.token_hex(3)}{secrets.token_hex(3)}".upper()[:12]
+            exists = (
+                await session.execute(
+                    select(Order.id).where(Order.public_hash == candidate)
+                )
+            ).first()
+            if exists is None:
+                return candidate
+        raise RuntimeError("Could not allocate a unique public order code")
+
     async def create_order(self, *, tg_user_id, username, platform, service: Service,
                            quantity: int, target_url: str) -> Order:
         async with self._session_factory() as session:
             max_id = (await session.execute(select(func.max(Order.order_id)))).scalar()
             order_id = self._next_order_id(max_id)
+            public_hash = await self._next_public_hash(session)
 
             # Authoritative price: re-read from DB, never from the passed object,
             # so a concurrent admin price change is reflected (section 23).
@@ -364,6 +409,7 @@ class Repository:
             ttl_seconds = config.get_settings().crypto_invoice_ttl_seconds
             order = Order(
                 order_id=order_id,
+                public_hash=public_hash,
                 telegram_user_id=tg_user_id,
                 username=username,
                 platform=platform,

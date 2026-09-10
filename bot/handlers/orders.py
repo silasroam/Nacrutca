@@ -11,6 +11,7 @@ from ..keyboards import constants as C
 from ..keyboards import orders as kb_orders
 from ..keyboards.main import support_link
 from ..services.pricing import PLATFORM_NAMES
+from ..services.orders import order_code
 from .common import get_repo, answer_query, safe_answer
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ async def order_detail(update: Update, context: CallbackContext) -> None:
 
     url_line = order.target_url or "—"
     text = (
-        f"📦 <b>Детали заказа #{order.order_id}</b>\n\n"
+        f"📦 <b>Детали заказа {order_code(order)}</b>\n\n"
         f"🌐 Платформа: {PLATFORM_NAMES.get(order.platform, order.platform)}\n"
         f"🛠 Услуга: {order.service_name}\n\n"
         f"🔢 Количество: {fmt(order.quantity)}\n"
