@@ -112,6 +112,7 @@ async def pay_method_selected(method: str, update: Update, context: CallbackCont
             context, update.effective_chat.id,
             "₿ <b>Оплата криптовалютой</b>\n\nВыберите валюту для оплаты:",
             reply_markup=kb_payments.crypto_wallets(order.order_id),
+            query=query,
         )
         return
     elif method == "stars":
@@ -121,12 +122,12 @@ async def pay_method_selected(method: str, update: Update, context: CallbackCont
         from ..services import stars as stars_svc
         stars_total = stars_svc.fiat_to_stars(Decimal(str(total)))
         await repo.set_stars_amount(order.order_id, stars_total)
-        await send_stars_invoice(update, context, order, stars_total)
+        await send_stars_invoice(update, context, order, stars_total, query=query)
         return
 
 
 async def send_stars_invoice(update: Update, context: CallbackContext,
-                             order: Order, stars_total: int) -> None:
+                             order: Order, stars_total: int, query=None) -> None:
     """Screen before paying with Stars: order, fiat, Stars total, course."""
     chat_id = update.effective_chat.id
     await safe_answer(
@@ -138,6 +139,7 @@ async def send_stars_invoice(update: Update, context: CallbackContext,
         "Курс:\n130 ₽ = 100 ⭐\n\n"
         "Нажмите кнопку ниже для оплаты.",
         reply_markup=kb_payments.stars_pay(order.order_id),
+        query=query,
     )
 
 

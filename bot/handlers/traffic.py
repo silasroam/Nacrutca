@@ -66,6 +66,7 @@ async def buy_traffic(update: Update, context: CallbackContext) -> None:
         "🌐 <b>Выбор платформы</b>\n\n"
         "— Укажите платформу, для которой требуется запуск трафика:",
         reply_markup=kb_platforms.platforms(),
+        query=query,
     )
 
 
@@ -101,6 +102,7 @@ async def platform_selected(update: Update, context: CallbackContext) -> None:
         f"{emoji} <b>{name} — Выбор услуги</b>\n\n"
         "— Выберите тип продвижения:",
         reply_markup=kb_services.services(platform, svc_list),
+        query=query,
     )
 
 
@@ -159,7 +161,7 @@ async def service_selected(update: Update, context: CallbackContext) -> None:
         + "\n━━━━━━━━━━━━━━━━━━\n"
         "✏️ Введите необходимое количество:"
     )
-    await safe_answer(context, update.effective_chat.id, card)
+    await safe_answer(context, update.effective_chat.id, card, query=query)
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +304,7 @@ async def confirm_purchase(update: Update, context: CallbackContext) -> None:
         "💳 <b>Способ оплаты</b>\n\n"
         "— Выберите удобный метод проведения платежа:",
         reply_markup=kb_payments.payment_methods(svc.id),
+        query=query,
     )
 
 

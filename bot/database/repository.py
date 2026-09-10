@@ -341,8 +341,8 @@ class Repository:
     # ------------------------------------------------------------------
     @staticmethod
     def _next_order_id(session_max_id: int | None) -> int:
-        # Simple scheme: small incremental integer, human-friendly (#1842)
-        base = 1000
+        # Simple scheme: small incremental integer, human-friendly (#256)
+        base = 256
         return (session_max_id or base - 1) + 1
 
     async def create_order(self, *, tg_user_id, username, platform, service: Service,

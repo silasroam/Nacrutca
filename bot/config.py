@@ -77,9 +77,18 @@ class Settings:
         # Crypto invoice lifetime (seconds). Default 30 minutes.
         self.crypto_invoice_ttl_seconds: int = _get_int("CRYPTO_INVOICE_TTL_SECONDS", 30 * 60)
 
-        self.database_url: str = os.getenv(
-            "DATABASE_URL", "sqlite+aiosqlite:///./traffic_bot.db"
-        )
+        # Production uses Neon PostgreSQL (serverless, read-only filesystem).
+        # DATABASE_URL MUST come from the environment; there is deliberately NO
+        # local SQLite fallback here — a missing value would silently point the
+        # app at a local .db file that Vercel cannot open (read-only FS) and fail
+        # with "unable to open database file".
+        raw_db_url = os.getenv("DATABASE_URL")
+        if not raw_db_url:
+            raise RuntimeError(
+                "DATABASE_URL is not set in environment variables! "
+                "Set it to your Neon PostgreSQL DSN (postgresql://...@...neon.tech/...?sslmode=require)."
+            )
+        self.database_url: str = raw_db_url
 
         # Public username of the separate Support Bot (no @). When set, the main
         # bot shows a "🛟 Поддержка" button and order-level deep links to it.

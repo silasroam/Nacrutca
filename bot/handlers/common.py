@@ -139,9 +139,19 @@ def ux_error(message: str) -> str:
 
 async def safe_answer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str,
                       reply_markup=None, parse_mode: str = "HTML",
-                      edit: bool = False, message_id: int | None = None):
-    """Send or edit a message, swallowing irrelevant errors."""
+                      edit: bool = False, message_id: int | None = None,
+                      query=None):
+    """Send or edit a message, swallowing irrelevant errors.
+
+    Anti-spam: when triggered by an inline-button press, pass the callback
+    ``query`` (or set ``edit=True`` + ``message_id``) to *replace* the existing
+    message in place instead of appending a new one — keeps the chat clean.
+    """
     try:
+        if (query is not None and getattr(query, "message", None) is not None
+                and not edit):
+            edit = True
+            message_id = query.message.message_id
         if edit and message_id:
             await context.bot.edit_message_text(
                 chat_id=chat_id, message_id=message_id, text=text,
