@@ -38,6 +38,8 @@ from .common import (
     ensure_draft,
     answer_query,
     safe_answer,
+    fsm_get,
+    fsm_set,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,13 +52,27 @@ async def pay_method_selected(method: str, update: Update, context: CallbackCont
     user = update.effective_user
 
     repo = get_repo(context)
-    draft = ensure_draft(context)
-    svc: Service | None = draft.get("service")
+    uid = user.id if user is not None else None
+
+    # The order draft is persisted in the DB FSM (serverless-safe), NOT in the
+    # in-memory `context.user_data` (MemoryPersistence is lost between Vercel
+    # webhook invocations). Restore it from the DB like the rest of the flow,
+    # falling back to the in-memory draft only for local polling runs.
+    _state, draft = await fsm_get(context, user_id=uid)
+    if not draft:
+        draft = ensure_draft(context)
+
+    # The DB draft stores `service_id` (not a Service object); resolve it here.
+    svc_id = draft.get("service_id") or service_id
+    svc: Service | None = None
+    if svc_id:
+        svc = await repo.get_service(int(svc_id))
     quantity: int | None = draft.get("quantity")
     platform: str | None = draft.get("platform")
     target_url: str | None = draft.get("target_url")
 
     if svc is None or not quantity or not platform:
+        await fsm_clear(context, user_id=uid)
         reset_flow(context)
         await safe_answer(
             context, update.effective_chat.id,
@@ -79,9 +95,11 @@ async def pay_method_selected(method: str, update: Update, context: CallbackCont
     # so both the crypto currency handler and the stars handler can resolve the
     # current pending order (bugfix: crypto branch used to `return` before this,
     # leaving `pending_order_id` unset -> "Заказ устарел" for every currency).
+    # Persist it in BOTH the DB FSM draft (serverless-safe) and user_data.
     draft = ensure_draft(context)
     draft["order_id"] = order.order_id
     context.user_data["pending_order_id"] = order.order_id
+    await fsm_set(context, OrderState.PAYMENT_PROCESSING, draft, user_id=uid)
 
     # The authoritative amount is the one recomputed & stored by the DB.
     total = order.total_price
