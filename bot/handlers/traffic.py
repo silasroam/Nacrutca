@@ -343,7 +343,5 @@ def register(app) -> None:
         CallbackQueryHandler(confirm_purchase, pattern="^" + C.CB_CONFIRM + ":")
     )
     app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND, quantity_or_url_input, block=False
-        )
+        MessageHandler(filters.TEXT & ~filters.COMMAND, quantity_or_url_input)
     )
