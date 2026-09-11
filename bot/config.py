@@ -65,6 +65,12 @@ class Settings:
         # Kept for backwards compatibility only; not used by the Stars flow.
         self.stars_provider_token: str = os.getenv("STARS_PROVIDER_TOKEN", "")
 
+        # Token of the separate Support Bot (from @BotFather). Used together with
+        # SUPPORT_BOT_USERNAME when building the "🛟 Поддержка" button. When only
+        # the token is set (no username), the support button is shown as a callback
+        # that opens a support contact screen.
+        self.support_bot_token: str = os.getenv("SUPPORT_BOT_TOKEN", "")
+
         # --- Blockchain indexers for the crypto payment flow (secret!) ---
         # These are read from the environment / .env only. Never log them.
         self.trongrid_api_key: str = os.getenv("TRONGRID_API_KEY", "")

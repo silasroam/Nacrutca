@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackContext, CallbackQueryHandler
 
 from ..keyboards import constants as C
@@ -47,5 +47,31 @@ async def help_screen(update: Update, context: CallbackContext) -> None:
     )
 
 
+async def support_callback(update: Update, context: CallbackContext) -> None:
+    """Handle the '🛟 Поддержка' callback when only the token is configured."""
+    query = update.callback_query
+    await answer_query(query)
+    settings = context.bot_data.get("settings")
+    username = getattr(settings, "support_bot_username", "") if settings else ""
+    if username:
+        text = (
+            "🛟 <b>Служба поддержки</b>\n\n"
+            "Нажмите кнопку ниже, чтобы написать в поддержку:"
+        )
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("✉️ Написать в поддержку", url=f"https://t.me/{username}")]]
+        )
+    else:
+        text = (
+            "🛟 <b>Служба поддержки</b>\n\n"
+            "Для связи с нашей службой поддержки используйте контакты ниже "
+            "или создайте тикет через основного бота.\n\n"
+            "Мы ответим в течение 24 часов."
+        )
+        markup = kb_payments.support()
+    await safe_answer(context, update.effective_chat.id, text, reply_markup=markup)
+
+
 def register(app) -> None:
     app.add_handler(CallbackQueryHandler(help_screen, pattern="^" + C.CB_HELP + "$"))
+    app.add_handler(CallbackQueryHandler(support_callback, pattern="^" + C.CB_SUPPORT + "$"))
