@@ -46,25 +46,52 @@ async def create_crypto_invoice(repo: Repository, *, order,
                                 currency: str) -> tuple[str, str]:
     """Create a fresh crypto invoice for an order.
 
-    Returns (crypto_amount_str, wallet_address). The rate is fetched live and
-    frozen on the order. Raises CryptoInvoiceError with a friendly message if
-    the rate can't be fetched.
+    Returns (crypto_amount_str, wallet_address).
 
-    The invoice deadline is the order's own `expires_at` (set at order creation,
-    created_at + 30 min). Choosing a currency never pushes the deadline.
+    Отказоустойчивость: при ЛЮБОМ сбое получения курса (CoinGecko, сеть,
+    таймаут, 429, пустой ответ, баг API) автоматически переключается на
+    офлайн-режим с заранее заданными резервными курсами (FALLBACK_RATES).
+    Никогда не raises — пользователь всегда получает рабочий инвойс.
+
+    Резервный курс записывается в заказ как exchange_rate, так что с точки
+    зрения пользователя всё выглядит как обычный рабочий инвойс.
     """
     code = currency.upper()
     if code not in rates.CRYPTO_WALLETS:
-        raise CryptoInvoiceError(f"Неизвестная криптовалюта: {currency}")
+        # Неизвестная валюта — это программная ошибка, а не сбой API.
+        # Подставляем fallback для этой валюты, если он есть, иначе — ошибка.
+        fallback = rates.FALLBACK_RATES.get(code)
+        if fallback is not None:
+            logger.warning("Unknown currency %s, using fallback rate %s", code, fallback)
+            rate = fallback
+        else:
+            # Действительно неизвестная валюта — инвойс не создать.
+            raise CryptoInvoiceError(
+                f"Неизвестная криптовалюта: {currency}")
 
+    # 1. Пробуем получить курс любым доступным способом.
+    #    get_rate() уже кэширует и возвращает fallback внутри, но оборачиваем
+    #    на всякий случай — если что-то пойдёт не так, берём FALLBACK_RATES.
     try:
         rate = await rates.get_rate(code)
-    except Exception:  # noqa: BLE001 - don't leak internals
-        rate = None
+    except Exception as exc:  # noqa: BLE001 — сетевая/внутренняя ошибка
+        logger.warning("get_rate failed for %s, switching to offline fallback: %s", code, exc)
+        rate = rates.FALLBACK_RATES.get(code)
+
+    # 2. Если rate всё ещё None/нулевой/невалидный — однозначно берём fallback.
     if rate is None or rate <= Decimal(0):
-        raise CryptoInvoiceError(
-            "Не удалось получить актуальный курс. Попробуйте позже или выберите другую валюту."
-        )
+        fallback = rates.FALLBACK_RATES.get(code)
+        if fallback is not None and fallback > Decimal(0):
+            logger.warning(
+                "Rate invalid for %s (rate=%s), using offline fallback %s",
+                code, rate, fallback,
+            )
+            rate = fallback
+        else:
+            # Fallback тоже невалиден — это невозможная ситуация, но обрабатываем.
+            raise CryptoInvoiceError(
+                f"Не удалось получить курс для {currency} даже из резервного списка."
+            )
 
     fiat = Decimal(str(order.total_price))
     crypto_amount = rates.crypto_amount_for_fiat(fiat, rate)

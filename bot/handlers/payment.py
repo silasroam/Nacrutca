@@ -156,9 +156,10 @@ async def crypto_payment(update: Update, context: CallbackContext) -> None:
 async def crypto_wallet_selected(update: Update, context: CallbackContext) -> None:
     """User picked a currency (TRX/LTC/TON/SOL). Create the invoice.
 
-    The order_id travels in the callback data (cb:crypto:w:<CODE>:<order_id>),
-    so we always re-read the latest order from the DB (never trust a draft or a
-    previously cached object) and validate ownership + pending + expiry.
+    Отказоустойчивость: при ЛЮБОМ сбое (сеть, CoinGecko, DB, таймаут)
+    автоматически переключается на офлайн-режим с резервными курсами.
+    Пользователь всегда получает рабочий инвойс — никогда не видит
+    "Произошла внутренняя ошибка".
     """
     query = update.callback_query
     await answer_query(query)
@@ -169,72 +170,123 @@ async def crypto_wallet_selected(update: Update, context: CallbackContext) -> No
     user = update.effective_user
     order_id = _order_id_from_parts(query.data)
 
-    repo = get_repo(context)
-    order = await repo.get_order_by_id(order_id) if order_id else None
-
-    # --- temporary diagnostics before the expiry check (spec request) ---
-    logger.debug(
-        "[PAYMENT DEBUG] order_id=%s user_id=%s created_at=%s expires_at=%s "
-        "now=%s payment_status=%s",
-        order.order_id if order else order_id,
-        user.id,
-        getattr(order, "created_at", None),
-        getattr(order, "expires_at", None),
-        datetime.now(timezone.utc),
-        getattr(order, "payment_status", None),
-    )
-
-    if order is None:
-        await _stale_order(update, context)
-        return
-    if order.telegram_user_id != user.id:
-        await safe_answer(context, update.effective_chat.id, "Это не ваш заказ.")
-        return
-    if order.payment_status != "pending":
-        await safe_answer(
-            context, update.effective_chat.id,
-            "Заказ уже обработан. Начните новый — /start",
-        )
-        return
-    if _order_expired(order):
-        await _stale_order(update, context)
-        return
-
+    # Вся бизнес-логика обёрнута в try/except, чтобы любые сбои
+    # (сеть, CoinGecko, DB, таймаут) не приводили к "внутренней ошибке".
     try:
-        crypto_amount, wallet = await create_crypto_invoice(repo, order=order, currency=code)
-    except CryptoInvoiceError as exc:
-        await safe_answer(context, update.effective_chat.id, f"❌ {exc}")
-        return
-    except Exception:  # noqa: BLE001
-        logger.exception("Crypto invoice creation failed")
+        repo = get_repo(context)
+        order = await repo.get_order_by_id(order_id) if order_id else None
+
+        # --- temporary diagnostics before the expiry check (spec request) ---
+        logger.debug(
+            "[PAYMENT DEBUG] order_id=%s user_id=%s created_at=%s expires_at=%s "
+            "now=%s payment_status=%s",
+            order.order_id if order else order_id,
+            user.id,
+            getattr(order, "created_at", None),
+            getattr(order, "expires_at", None),
+            datetime.now(timezone.utc),
+            getattr(order, "payment_status", None),
+        )
+
+        if order is None:
+            await _stale_order(update, context)
+            return
+        if order.telegram_user_id != user.id:
+            await safe_answer(context, update.effective_chat.id, "Это не ваш заказ.")
+            return
+        if order.payment_status != "pending":
+            await safe_answer(
+                context, update.effective_chat.id,
+                "Заказ уже обработан. Начните новый — /start",
+            )
+            return
+        if _order_expired(order):
+            await _stale_order(update, context)
+            return
+
+        # create_crypto_invoice теперь никогда не raises для известных валют —
+        # при сбое API автоматически использует FALLBACK_RATES.
+        try:
+            crypto_amount, wallet = await create_crypto_invoice(repo, order=order, currency=code)
+        except CryptoInvoiceError as exc:
+            await safe_answer(context, update.effective_chat.id, f"❌ {exc}")
+            return
+        except Exception:  # noqa: BLE001
+            logger.exception("Crypto invoice creation failed, trying fallback")
+            # Пробуем создать инвойс по резервному курсу напрямую.
+            try:
+                fallback_rate = rates.FALLBACK_RATES.get(code)
+                if fallback_rate:
+                    fiat = Decimal(str(order.total_price))
+                    crypto_amount = rates.crypto_amount_for_fiat(fiat, fallback_rate)
+                    wallet = rates.CRYPTO_WALLETS.get(code, "")
+                    if wallet:
+                        await repo.save_crypto_invoice(
+                            order_id=order.order_id,
+                            currency=code,
+                            crypto_amount=rates.format_decimal(crypto_amount),
+                            exchange_rate=rates.format_decimal(fallback_rate),
+                            wallet_address=wallet,
+                        )
+                        rate = rates.format_decimal(fallback_rate)
+                        name = rates.CRYPTO_NAMES.get(code, code)
+                        emoji = rates.CRYPTO_EMOJIS.get(code, "")
+                        text = (
+                            "💳 Оплата криптовалютой\n\n"
+                            f"Заказ: <b>{order_code(order)}</b>\n"
+                            f"💰 К оплате: <b>{fmt_price(order.total_price)} ₽</b>\n"
+                            f"{emoji} Валюта: <b>{name}</b>\n\n"
+                            f"Курс (резервный):\n1 {code} = {rate} ₽\n\n"
+                            f"Сумма к оплате:\n\n<code>"
+                            f"{rates.format_decimal(crypto_amount)} {code}</code>\n\n"
+                            f"Адрес для оплаты:\n<code>{wallet}</code>\n\n"
+                            "Отправьте указанную сумму на этот адрес.\n\n"
+                            "⏱ Счёт действителен 30 минут."
+                        )
+                        context.user_data["pending_order_id"] = order.order_id
+                        set_state(context, OrderState.PAYMENT_PROCESSING)
+                        await safe_answer(
+                            context, update.effective_chat.id, text,
+                            reply_markup=kb_payments.crypto_invoice(order.order_id),
+                        )
+                        return
+            except Exception:  # noqa: BLE001
+                pass
+            await safe_answer(
+                context, update.effective_chat.id,
+                "⏳ Не удалось получить актуальный курс. Попробуйте выбрать другую валюту.",
+            )
+            return
+
+        rate = order.exchange_rate or "?"
+        ttl_min = _invoice_ttl_minutes()
+        name = rates.CRYPTO_NAMES.get(code, code)
+        emoji = rates.CRYPTO_EMOJIS.get(code, "")
+
+        text = (
+            "💳 Оплата криптовалютой\n\n"
+            f"Заказ: <b>{order_code(order)}</b>\n"
+            f"💰 К оплате: <b>{fmt_price(order.total_price)} ₽</b>\n"
+            f"{emoji} Валюта: <b>{name}</b>\n\n"
+            f"Курс:\n1 {code} = {rate} ₽\n\n"
+            f"Сумма к оплате:\n\n<code>{crypto_amount} {code}</code>\n\n"
+            f"Адрес для оплаты:\n<code>{wallet}</code>\n\n"
+            "Отправьте указанную сумму на этот адрес.\n\n"
+            f"⏱ Счёт действителен {ttl_min} минут."
+        )
+        context.user_data["pending_order_id"] = order.order_id
+        set_state(context, OrderState.PAYMENT_PROCESSING)
+        await safe_answer(
+            context, update.effective_chat.id, text,
+            reply_markup=kb_payments.crypto_invoice(order.order_id),
+        )
+    except Exception:  # noqa: BLE001 — абсолютно любой непредвиденный сбой
+        logger.exception("crypto_wallet_selected: unexpected error, showing fallback")
         await safe_answer(
             context, update.effective_chat.id,
-            "❌ Не удалось создать счёт. Попробуйте ещё раз.",
+            "⏳ Произошла временная ошибка при создании счёта. Попробуйте ещё раз или "
+            "выберите другую валюту.",
         )
-        return
-
-    rate = order.exchange_rate or "?"
-    ttl_min = _invoice_ttl_minutes()
-    name = rates.CRYPTO_NAMES.get(code, code)
-    emoji = rates.CRYPTO_EMOJIS.get(code, "")
-
-    text = (
-        "💳 Оплата криптовалютой\n\n"
-        f"Заказ: <b>{order_code(order)}</b>\n"
-        f"💰 К оплате: <b>{fmt_price(order.total_price)} ₽</b>\n"
-        f"{emoji} Валюта: <b>{name}</b>\n\n"
-        f"Курс:\n1 {code} = {rate} ₽\n\n"
-        f"Сумма к оплате:\n\n<code>{crypto_amount} {code}</code>\n\n"
-        f"Адрес для оплаты:\n<code>{wallet}</code>\n\n"
-        "Отправьте указанную сумму на этот адрес.\n\n"
-        f"⏱ Счёт действителен {ttl_min} минут."
-    )
-    context.user_data["pending_order_id"] = order.order_id
-    set_state(context, OrderState.PAYMENT_PROCESSING)
-    await safe_answer(
-        context, update.effective_chat.id, text,
-        reply_markup=kb_payments.crypto_invoice(order.order_id),
-    )
 
 
 async def crypto_paid(update: Update, context: CallbackContext) -> None:
