@@ -27,6 +27,7 @@ CB_MY_ORDERS = CB + ":myorders"
 CB_HELP = CB + ":help"
 CB_BACK = CB + ":back"
 CB_SUPPORT = CB + ":support"
+CB_RULES = CB + ":rules"
 
 # --- platforms ---
 CB_PLATFORM = "platform"
