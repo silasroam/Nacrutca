@@ -1,6 +1,6 @@
 [project]
 name = "nacrutca-bot"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
     "python-telegram-bot>=21.0",
     "sqlalchemy>=2.0.0",
