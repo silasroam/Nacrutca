@@ -90,9 +90,9 @@ class Settings:
             )
         self.database_url: str = raw_db_url
 
-        # Public username of the separate Support Bot (no @). When set, the main
-        # bot shows a "🛟 Поддержка" button and order-level deep links to it.
-        self.support_bot_username: str = os.getenv("SUPPORT_BOT_USERNAME", "")
+        # Support Bot token + username (hardcoded by request for the Nacrutca support bot).
+        self.support_bot_token: str = "8658441399:AAHUBgSOXzwqOtmZHgzqiPXh3eW1FDoQGxA"
+        self.support_bot_username: str = "NacrutcaSUPPORTbot"
 
         # ------------------------------------------------------------------
         # Validation limits (section 24)

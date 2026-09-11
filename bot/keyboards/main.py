@@ -19,7 +19,7 @@ def main_menu() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(
                 "💬 Поддержка",
-                url=f"https://t.me/{settings.support_bot_username}",
+                url="https://t.me/NacrutcaSUPPORTbot",
             )
         ],
     ]
