@@ -79,17 +79,14 @@ async def rules_callback(update, context: CallbackContext) -> None:
         "— Если у вас остались вопросы, свяжитесь со службой поддержки:"
     )
 
-    if username:
-        markup = InlineKeyboardMarkup(
-            [[
+    markup = InlineKeyboardMarkup(
+        [
+            [
                 InlineKeyboardButton("💬 Поддержка", url=f"https://t.me/{username}"),
                 InlineKeyboardButton("🔙 Назад", callback_data=C.CB_BACK),
-            ]]
-        )
-    else:
-        markup = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🔙 Назад", callback_data=C.CB_BACK)]]
-        )
+            ]
+        ]
+    )
 
     await safe_answer(context, update.effective_chat.id, text, reply_markup=markup)
 
