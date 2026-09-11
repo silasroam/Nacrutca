@@ -33,6 +33,8 @@ A_PANEL = make(P, "panel")
 A_FILTER = make(P, "f")        # f:<status|all|closed>
 A_REPLY = make(P, "reply")     # reply:<ticket_id>
 A_CLOSE = make(P, "close")     # close:<ticket_id>
+A_CONFIRM = make(P, "confirm")
+A_CANCEL_PREVIEW = make(P, "cancel_preview")
 
 
 def status_emoji(status: str) -> str:
@@ -122,6 +124,38 @@ def admin_ticket_actions(ticket_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔙 Support Panel", callback_data=A_PANEL)],
     ]
     return InlineKeyboardMarkup(rows)
+
+def admin_ticket_actions_ticket(ticket_id: int) -> InlineKeyboardMarkup:
+    """Actions shown under a new-ticket notification for the admin.
+
+    Matches the support service spec:
+        [ 💬 Ответить ] [ ❌ Закрыть диалог ]
+    """
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("💬 Ответить", callback_data=make(A_REPLY, ticket_id)),
+                InlineKeyboardButton("❌ Закрыть диалог", callback_data=make(A_CLOSE, ticket_id)),
+            ],
+        ]
+    )
+
+
+def preview_keyboard() -> InlineKeyboardMarkup:
+    """Inline keyboard shown under the ticket preview.
+
+    Matches the support flow spec:
+        [ ✅ Подтвердить отправку ] [ ❌ Отменить ]
+    """
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Подтвердить отправку", callback_data=A_CONFIRM),
+                InlineKeyboardButton("❌ Отменить", callback_data=A_CANCEL_PREVIEW),
+            ],
+        ]
+    )
+
 
 
 def admin_closed_ticket_actions() -> InlineKeyboardMarkup:

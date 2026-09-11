@@ -55,6 +55,49 @@ _ORDER_REF_RE = re.compile(r"#?\b(\d{3,8})\b")
 
 REPO_KEY = "support_repo"
 
+# ---------------------------------------------------------------------------
+# Texts (aligned with the support service specification)
+# ---------------------------------------------------------------------------
+WELCOME_TEXT = (
+    "🛡️ <b>Nacrutca Support Center</b>\n"
+    "\n"
+    "Здравствуйте! Вы обратились в официальную службу поддержки сервиса "
+    "<b>Nacrutca</b>.\n"
+    "• <b>Регламент работы:</b> Наша команда на связи для оперативного "
+    "решения любых вопросов, связанных с заказами и услугами.\n"
+    "• <b>Время отклика:</b> Обращения обрабатываются в порядке очереди. "
+    "Среднее время ответа специалистов составляет <b>до 24 часов</b>.\n"
+    "\n"
+    "Пожалуйста, опишите вашу проблему или задайте вопрос одним сообщением."
+)
+
+ADMIN_TICKET_HEADER = "📩 Новое обращение от пользователя"
+ADMIN_CLOSE_HEADER = "❌ Закрытие обращения"
+
+# Confirmation/preview flow for the specified support flow.
+TICKET_DRAFT_KEY = "sup_ticket_draft"
+PREVIEW_HEADER = "📝 <b>Проверьте ваше обращение:</b>"
+CONFIRMED_HEADER = "✅ <b>Ваше обращение успешно отправлено в службу поддержки!</b>"
+CONFIRMED_BODY = (
+    "Ожидайте ответа (в среднем до 24 часов).\n\n"
+    "Если у вас возникнут дополнительные вопросы, вы можете написать нам снова."
+)
+ADMIN_NOTICE_NEW = "📩 Новое подтвержденное обращение"
+CANCELLED_TEXT = "❌ Обращение отменено. Вы можете написать заново или использовать меню."
+
+_MAIN_MENU_TEXT = (
+    "🛟 <b>SUPPORT</b>\n"
+    "━━━━━━━━━━━━━━━━━━\n"
+    "Служба поддержки Traffic Bot\n\n"
+    "Здесь можно:\n"
+    "◆ Создать обращение\n"
+    "◆ Проверить существующее обращение\n"
+    "◆ Получить ответ оператора\n\n"
+    "📦 Если вопрос связан с заказом, укажите его номер.\n"
+    "━━━━━━━━━━━━━━━━━━"
+)
+
+
 MAIN_MENU_TEXT = (
     "🛟 <b>SUPPORT</b>\n"
     "━━━━━━━━━━━━━━━━━━\n"
@@ -103,13 +146,53 @@ async def safe_send(context, chat_id: int, text: str,
         logger.warning("safe_send failed: %s", exc)
 
 
+async def _resolve_order_id(context, user_id: int, text: str, repo) -> int | None:
+    m = _ORDER_REF_RE.search(text)
+    if m:
+        candidate = int(m.group(1))
+        order = await repo.find_order_by_id(candidate)
+        if order is not None and order.telegram_user_id == user_id:
+            return candidate
+    if context.user_data.get(PENDING_ORDER):
+        return context.user_data[PENDING_ORDER]
+    return None
+
+
+def _preview_content_text(draft: dict, user) -> str:
+    text = draft.get("text") or ""
+    content_type = draft.get("content_type")
+    if content_type == CONTENT_PHOTO:
+        label = "\n📷 <b>Фото</b>"
+    elif content_type == CONTENT_DOCUMENT:
+        label = "\n📎 <b>Файл</b>"
+    elif content_type == CONTENT_VIDEO:
+        label = "\n🎬 <b>Видео</b>"
+    else:
+        label = ""
+    order_note = ""
+    if draft.get("order_id"):
+        order_note = f"\n📦 Заказ: <code>#{draft['order_id']}</code>"
+    return (
+        PREVIEW_HEADER + "\n"
+        + (text if text else "📎 (вложение)")
+        + label
+        + order_note
+    )
+
+
 def _user_display(ticket) -> str:
     """Human label for a ticket owner, never leaking IDs unless needed."""
     return f"@{ticket.username}" if ticket.username else f"id {ticket.user_id}"
 
 
 async def start_command(update: Update, context: CallbackContext) -> None:
-    """/start entry point. Optional deep link: /start ticket_1842."""
+    """/start entry point.
+
+    Per the support service specification the bot sends a welcome message and
+    expects the user to describe their issue in a single message. If a deep
+    link like /start ticket_1842 is used, the referenced order is attached to
+    the ticket once it is created.
+    """
     user = update.effective_user
     if user is None:
         return
@@ -119,7 +202,6 @@ async def start_command(update: Update, context: CallbackContext) -> None:
     )
 
     # Deep link support: /start ticket_<order_id> pre-links a new ticket.
-    # context.args is the canonical PTB way to read deep-link arguments.
     pending_order = None
     args = context.args or []
     for arg in args:
@@ -132,13 +214,39 @@ async def start_command(update: Update, context: CallbackContext) -> None:
             break
     context.user_data[PENDING_ORDER] = pending_order
 
-    is_admin = get_settings().is_admin(user.id)
-    await _show_main_menu(context, update.effective_chat.id, is_admin=is_admin)
+    # Welcome message from the support service spec.
+    await safe_send(context, update.effective_chat.id, WELCOME_TEXT)
+
+    # Move the user into "describe your issue" mode.
+    _set_state(context, SupportState.creating)
+    order_hint = ""
     if pending_order:
+        order_hint = (
+            f"\n📦 Будет привязан заказ <code>#{pending_order}</code>\n"
+        )
         await safe_send(
-            context, update.effective_chat.id,
-            f"📦 Будет привязан заказ <code>#{pending_order}</code>.\n"
-            "Нажмите «📝 Создать обращение», чтобы описать проблему.",
+            context,
+            update.effective_chat.id,
+            "📝 <b>НОВОЕ ОБРАЩЕНИЕ</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Теперь опишите вашу проблему одним сообщением.\n\n"
+            + (f"Заказ <code>#{pending_order}</code> будет автоматически привязан к обращению.\n\n" if pending_order else "")
+            + "Можно отправить текст, фото или другой поддерживаемый Telegram-контент.\n"
+            "Нажмите «❌ Отмена», если передумали.\n"
+            "━━━━━━━━━━━━━━━━━━",
+            reply_markup=kb.creating(),
+        )
+    else:
+        await safe_send(
+            context,
+            update.effective_chat.id,
+            "📝 <b>НОВОЕ ОБРАЩЕНИЕ</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Опишите вашу проблему одним сообщением.\n"
+            "Можно отправить текст, фото или другой поддерживаемый Telegram-контент.\n"
+            "Нажмите «❌ Отмена», если передумали.\n"
+            "━━━━━━━━━━━━━━━━━━",
+            reply_markup=kb.creating(),
         )
 
 
@@ -175,6 +283,134 @@ async def main_menu_back(update: Update, context: CallbackContext) -> None:
     await _show_main_menu(context, update.effective_chat.id, is_admin=is_admin)
 
 
+
+# ---------------------------------------------------------------------------
+# Preview confirmation / cancel (specification support flow)
+# ---------------------------------------------------------------------------
+async def preview_confirm(update: Update, context: CallbackContext) -> None:
+    """User confirmed the preview: create the ticket and notify the admin."""
+    query = update.callback_query
+    await answer_query(query)
+    draft = context.user_data.get(TICKET_DRAFT_KEY)
+    if draft is None:
+        await safe_send(
+            context, update.effective_chat.id,
+            "⚠️ Время ожидания истекло. Пожалуйста, начните заново.",
+            reply_markup=kb.main_menu(is_admin=get_settings().is_admin(
+                update.effective_user.id if update.effective_user else 0,
+            )),
+        )
+        _reset_state(context)
+        return
+
+    user = update.effective_user
+    repo = get_repo(context)
+    ticket = await repo.create_ticket(
+        user_id=draft["user_id"],
+        username=draft["username"],
+        order_id=draft.get("order_id"),
+        text=draft["text"],
+        content_type=draft["content_type"],
+        telegram_message_id=draft.get("telegram_message_id"),
+    )
+    _reset_state(context)
+    context.user_data.pop(PENDING_ORDER, None)
+    context.user_data.pop(TICKET_DRAFT_KEY, None)
+
+    # Replace the preview message with the confirmation message.
+    success_text = CONFIRMED_HEADER + "\n" + CONFIRMED_BODY
+    try:
+        await context.bot.edit_message_text(
+            chat_id=user.id,
+            message_id=draft.get("preview_message_id", 0),
+            text=success_text,
+            parse_mode="HTML",
+        )
+    except Exception as exc:  # pragma: no cover - network / message changes
+        logger.warning("preview confirm edit failed, sending new message: %s", exc)
+        try:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=success_text,
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    await safe_send(
+        context,
+        user.id,
+        text=(
+            f"🆔 Ваше обращение: <code>#{ticket.ticket_id}</code>\\n"
+            "Оператор ответит в ближайшее время. Ответ придёт сюда автоматически."
+        ),
+        reply_markup=kb.main_menu(is_admin=get_settings().is_admin(user.id)),
+        parse_mode="HTML",
+    )
+
+    await _notify_admin_new_ticket(context, update, ticket, draft["text"],
+                                  draft["content_type"])
+
+
+async def preview_cancel(update: Update, context: CallbackContext) -> None:
+    """User cancelled the preview (❌ Отменить)."""
+    query = update.callback_query
+    await answer_query(query)
+    draft = context.user_data.get(TICKET_DRAFT_KEY) or {}
+    preview_message_id = draft.get("preview_message_id")
+
+    _reset_state(context)
+    context.user_data.pop(TICKET_DRAFT_KEY, None)
+    context.user_data.pop(PENDING_ORDER, None)
+
+    if preview_message_id:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=query.effective_chat.id,
+                message_id=preview_message_id,
+                text=CANCELLED_TEXT,
+                parse_mode="HTML",
+            )
+        except Exception as exc:  # pragma: no cover - already deleted / changed
+            logger.warning("preview cancel edit failed: %s", exc)
+
+
+async def _notify_admin_new_ticket(context, update, ticket, text, content_type) -> None:
+    """Notify admin about a newly confirmed ticket.
+
+    Matches the support service spec:
+        📩 Новое подтвержденное обращение
+        👤 От: @username (ID: 123456789)
+        📝 Текст: [Текст пользователя]
+        [Кнопки для админа: 💬 Ответить / ❌ Закрыть]
+    """
+    settings = get_settings()
+    if not settings.admin_telegram_id:
+        return
+
+    body = text or "📎 (вложение)"
+    msg = (
+        ADMIN_NOTICE_NEW + "\n"
+        + "\n"
+        + "👤 От: " + (f"@{ticket.username}" if ticket.username else "(no username)") + f" (ID: {ticket.user_id})\n"
+        + "\n"
+        + "📝 Текст: " + body + "\n"
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=settings.admin_telegram_id,
+            text=msg,
+            reply_markup=kb.admin_ticket_actions_ticket(ticket.ticket_id),
+            parse_mode="HTML",
+        )
+        if content_type != CONTENT_TEXT and update.effective_message is not None:
+            try:
+                await update.effective_message.forward(settings.admin_telegram_id)
+            except Exception as exc:  # pragma: no cover - network errors
+                logger.warning("forward new ticket content failed: %s", exc)
+    except Exception as exc:  # pragma: no cover - network errors
+        logger.warning("admin new-ticket notify failed: %s", exc)
+
 async def new_ticket_menu(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await answer_query(query)
@@ -199,7 +435,12 @@ async def new_ticket_menu(update: Update, context: CallbackContext) -> None:
 # Creating a new ticket (text / photo / document / video)
 # ---------------------------------------------------------------------------
 async def receive_ticket_message(update: Update, context: CallbackContext) -> None:
-    """Handle the user's message that describes a new ticket."""
+    """Handle the user message that describes a new ticket.
+
+    Per the support flow spec the message is NOT sent to the admin immediately.
+    Instead the bot stores a draft, shows a preview with confirm/cancel buttons,
+    and only notifies the admin after the user confirms.
+    """
     user = update.effective_user
     if user is None:
         return
@@ -222,95 +463,36 @@ async def receive_ticket_message(update: Update, context: CallbackContext) -> No
     if not text and content_type == CONTENT_TEXT:
         await safe_send(
             context, update.effective_chat.id,
-            "⚠️ Пожалуйста, отправьте текстовое описание проблемы или фото/файл "
-            "с текстом.", reply_markup=kb.creating(),
+            "⚠️ Пожалуйста, отправьте текстовое описание вашей проблемы или \n"
+            "фото/файл с текстом.", reply_markup=kb.creating(),
         )
         return
+
+
 
     repo = get_repo(context)
-    # Auto-resolve an order if the user referenced #<id> and owns it.
-    order_id = None
-    m = _ORDER_REF_RE.search(text)
-    if m:
-        candidate = int(m.group(1))
-        order = await repo.find_order_by_id(candidate)
-        if order is not None and order.telegram_user_id == user.id:
-            order_id = candidate
-    # Deep-link pending order takes precedence if no #ref in text.
-    if order_id is None and context.user_data.get(PENDING_ORDER):
-        order_id = context.user_data[PENDING_ORDER]
+    order_id = _resolve_order_id(context, user.id, text, repo)
 
-    ticket = await repo.create_ticket(
-        user_id=user.id,
-        username=user.username or "",
-        order_id=order_id,
-        text=text,
-        content_type=content_type,
-        telegram_message_id=telegram_message_id,
+    # Store a draft so the user can review before sending.
+    draft = {
+        "user_id": user.id,
+        "username": user.username or "",
+        "order_id": order_id,
+        "text": text,
+        "content_type": content_type,
+        "telegram_message_id": telegram_message_id,
+    }
+    context.user_data[TICKET_DRAFT_KEY] = draft
+
+    preview_text = _preview_content_text(draft, user)
+    sent = await safe_send(
+        context, update.effective_chat.id, preview_text,
+        reply_markup=kb.preview_keyboard(),
     )
-    _reset_state(context)
-    context.user_data.pop(PENDING_ORDER, None)
+    if sent:
+        draft["preview_message_id"] = sent.message_id
 
-    await safe_send(
-        context, update.effective_chat.id,
-        "✅ Обращение создано!\n\n"
-        f"🆔 Ваше обращение: <code>#{ticket.ticket_id}</code>\n"
-        "Оператор ответит в ближайшее время. Ответ придёт сюда автоматически.",
-        reply_markup=kb.main_menu(is_admin=get_settings().is_admin(user.id)),
-    )
-    await _notify_admin_new_ticket(context, update, ticket, text, content_type)
-
-
-def _format_history(ticket, messages) -> str:
-    parts = [
-        "🗒 <b>История переписки</b>\n",
-        f"#{ticket.ticket_id} · {kb.status_label(ticket.status)}\n",
-        "━━━━━━━━━━━━━━━━━━",
-    ]
-    for m in messages:
-        who = "👤 Пользователь" if m.sender_type == "user" else "🛟 Оператор"
-        body = m.text or ("📎 " + m.content_type)
-        parts.append(f"{who}:\n{body}")
-    parts.append("━━━━━━━━━━━━━━━━━━")
-    return "\n".join(parts)
-
-
-async def _notify_admin_new_ticket(context, update, ticket, text, content_type) -> None:
-    settings = get_settings()
-    if not settings.admin_telegram_id:
-        return
-    extra = ""
-    if content_type != CONTENT_TEXT:
-        extra = f"📎 Тип: <b>{content_type}</b>\n"
-    body = text or "📎 (вложение без подписи)"
-    order_line = f"📦 Заказ: <code>#{ticket.order_id}</code>\n" if ticket.order_id else ""
-    msg = (
-        "🆕 <b>НОВОЕ ОБРАЩЕНИЕ #{}</b>\n".format(ticket.ticket_id) +
-        "━━━━━━━━━━━━━━━━━━\n" +
-        f"👤 Пользователь: {_user_display(ticket)}\n" +
-        f"🆔 ID: <code>{ticket.user_id}</code>\n" +
-        order_line +
-        f"🕐 Время: {ticket.created_at:%H:%M}\n\n" +
-        "💬 <b>Сообщение:</b>\n" + body + "\n" + extra +
-        "━━━━━━━━━━━━━━━━━━\n" +
-        "📌 Статус: 🟡 Ожидает ответа"
-    )
-    try:
-        await context.bot.send_message(
-            chat_id=settings.admin_telegram_id,
-            text=msg,
-            reply_markup=kb.admin_ticket_actions(ticket.ticket_id),
-            parse_mode="HTML",
-        )
-        # Pass the original rich content (photo/document/video) to the admin so
-        # the attachment itself is not lost, not just its caption.
-        if content_type != CONTENT_TEXT and update.effective_message is not None:
-            try:
-                await update.effective_message.forward(settings.admin_telegram_id)
-            except Exception as exc:  # pragma: no cover - network errors
-                logger.warning("forward rich content failed: %s", exc)
-    except Exception as exc:  # pragma: no cover - network errors
-        logger.warning("admin notify failed: %s", exc)
+    _set_state(context, SupportState.previewing)
 
 
 # ---------------------------------------------------------------------------
@@ -455,7 +637,7 @@ async def _notify_admin_user_replied(context, update, ticket, text, content_type
         await context.bot.send_message(
             chat_id=settings.admin_telegram_id,
             text=msg,
-            reply_markup=kb.admin_ticket_actions(ticket.ticket_id),
+            reply_markup=kb.admin_ticket_actions_ticket(ticket.ticket_id),
             parse_mode="HTML",
         )
         if content_type != CONTENT_TEXT and update.effective_message is not None:
@@ -694,6 +876,8 @@ def register(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(admin_filter, pattern="^" + kb.make(kb.A_FILTER, r"\w+") + "$"))
     app.add_handler(CallbackQueryHandler(admin_begin_reply, pattern="^" + kb.make(kb.A_REPLY, r"\d+") + "$"))
     app.add_handler(CallbackQueryHandler(admin_close_ticket, pattern="^" + kb.make(kb.A_CLOSE, r"\d+") + "$"))
+    app.add_handler(CallbackQueryHandler(preview_confirm, pattern="^" + kb.A_CONFIRM + "$"))
+    app.add_handler(CallbackQueryHandler(preview_cancel, pattern="^" + kb.A_CANCEL_PREVIEW + "$"))
     # Commands
     app.add_handler(CommandHandler("start", start_command))
     # Plain text / photo / document / video messages

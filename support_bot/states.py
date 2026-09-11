@@ -12,6 +12,7 @@ from enum import Enum, auto
 class SupportState(Enum):
     main_menu = auto()
     creating = auto()          # user is describing a new ticket
+    previewing = auto()        # ticket draft is shown; awaiting confirm / cancel
     viewing = auto()           # placeholder; not strictly used
     # Admin reply mode; the ticket_id is stored in user_data["sup_admin_reply"].
     admin_reply = auto()
