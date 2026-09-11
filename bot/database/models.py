@@ -85,10 +85,6 @@ class Order(Base):
     # order row exists (rows + payments reference it). It is deliberately NOT shown
     # to users anymore.
     order_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
-    # Public, user-facing order code (short random hash). Shown instead of #order_id
-    # in every message. Bound to the same 30-min invoice expiry (expires_at): once the
-    # invoice expires, this order code can no longer be paid.
-    public_hash: Mapped[str] = mapped_column(String(16), default="", index=True)
     # BIGINT - Telegram IDs exceed int32 range (e.g. 7969090536).
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     username: Mapped[str] = mapped_column(String(255), default="")

@@ -92,11 +92,8 @@ def fmt_rate_1000(price: float) -> str:
 def order_code(order) -> str:
     """Safe user-facing order code.
 
-    Prefers the public random hash (new orders); falls back to the internal id
-    only for legacy rows that were created before the hash column existed, so the
-    UI never breaks on old data.
+    Uses the internal order_id as the user-facing code (e.g. #1234).
+    The public_hash column was removed from production — this function
+    gracefully falls back to order_id for any row.
     """
-    code = getattr(order, "public_hash", "") or ""
-    if code:
-        return code
     return f"#{getattr(order, 'order_id', '?')}"

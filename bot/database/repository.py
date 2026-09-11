@@ -140,7 +140,6 @@ class Repository:
             "transaction_hash": '"VARCHAR(255)"',
             "stars_amount": "INTEGER",
             "telegram_payment_charge_id": '"VARCHAR(255)"',
-            "public_hash": '"VARCHAR(16)"',
         }
         async with self._engine.begin() as conn:
             existing = {
@@ -201,7 +200,7 @@ class Repository:
         """Add new columns to the existing Postgres 'orders' table idempotently."""
         from sqlalchemy import text
 
-        additions = {"public_hash": "VARCHAR(16)"}
+        additions = {}
         async with self._engine.begin() as conn:
             cols = {
                 row[0]
@@ -379,32 +378,10 @@ class Repository:
                 return candidate
         raise RuntimeError("Could not allocate a unique order ID")
 
-    async def _next_public_hash(self, session) -> str:
-        """Return a unique public order code (short random hash).
-
-        The code is shown to the user instead of the internal #order_id. It is
-        bound to the order's 30-min invoice expiry (expires_at); it is never shown
-        after the order is finalized. Guarded against the astronomically unlikely
-        collision by retrying.
-        """
-        import secrets
-
-        for _ in range(5):
-            candidate = f"{secrets.token_hex(3)}{secrets.token_hex(3)}".upper()[:12]
-            exists = (
-                await session.execute(
-                    select(Order.id).where(Order.public_hash == candidate)
-                )
-            ).first()
-            if exists is None:
-                return candidate
-        raise RuntimeError("Could not allocate a unique public order code")
-
     async def create_order(self, *, tg_user_id, username, platform, service: Service,
                            quantity: int, target_url: str) -> Order:
         async with self._session_factory() as session:
             order_id = await self._next_order_id(session)
-            public_hash = await self._next_public_hash(session)
 
             # Authoritative price: re-read from DB, never from the passed object,
             # so a concurrent admin price change is reflected (section 23).
@@ -419,7 +396,6 @@ class Repository:
             ttl_seconds = config.get_settings().crypto_invoice_ttl_seconds
             order = Order(
                 order_id=order_id,
-                public_hash=public_hash,
                 telegram_user_id=tg_user_id,
                 username=username,
                 platform=platform,
