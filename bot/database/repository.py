@@ -8,6 +8,7 @@ must not double-credit or double-charge (section 23).
 from __future__ import annotations
 
 import logging
+import random
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -362,11 +363,21 @@ class Repository:
 # ------------------------------------------------------------------
     # Orders
     # ------------------------------------------------------------------
-    @staticmethod
-    def _next_order_id(session_max_id: int | None) -> int:
-        # Simple scheme: small incremental integer, human-friendly (#256)
-        base = 256
-        return (session_max_id or base - 1) + 1
+    async def _next_order_id(self, session) -> int:
+        """Generate a random order ID between 1 and 10000.
+
+        Checks for collisions to ensure uniqueness.
+        """
+        for _ in range(100):  # Try up to 100 times to find a unique ID
+            candidate = random.randint(1, 10000)
+            exists = (
+                await session.execute(
+                    select(Order.id).where(Order.order_id == candidate)
+                )
+            ).first()
+            if exists is None:
+                return candidate
+        raise RuntimeError("Could not allocate a unique order ID")
 
     async def _next_public_hash(self, session) -> str:
         """Return a unique public order code (short random hash).
@@ -392,8 +403,7 @@ class Repository:
     async def create_order(self, *, tg_user_id, username, platform, service: Service,
                            quantity: int, target_url: str) -> Order:
         async with self._session_factory() as session:
-            max_id = (await session.execute(select(func.max(Order.order_id)))).scalar()
-            order_id = self._next_order_id(max_id)
+            order_id = await self._next_order_id(session)
             public_hash = await self._next_public_hash(session)
 
             # Authoritative price: re-read from DB, never from the passed object,
