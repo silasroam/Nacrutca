@@ -15,7 +15,7 @@ def main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📊 Моя статистика", callback_data=C.CB_STATS),
             InlineKeyboardButton("📋 Мои заказы", callback_data=C.CB_MY_ORDERS),
         ],
-        [InlineKeyboardButton("ℹ️ Помощь", callback_data=C.CB_HELP)],
+        [InlineKeyboardButton("🛡️ Правила и гарантии", callback_data=C.CB_HELP)],
     ]
     # "🛟 Поддержка" opens the separate Support Bot (only if its username is set).
     if settings.support_bot_username:
