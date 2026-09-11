@@ -8,7 +8,6 @@ from ..config import get_settings
 
 
 def main_menu() -> InlineKeyboardMarkup:
-    settings = get_settings()
     rows = [
         [InlineKeyboardButton("🚀 Купить трафик", callback_data=C.CB_BUY)],
         [
@@ -16,17 +15,13 @@ def main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📋 Мои заказы", callback_data=C.CB_MY_ORDERS),
         ],
         [InlineKeyboardButton("🛡️ Правила и гарантии", callback_data=C.CB_RULES)],
+        [
+            InlineKeyboardButton(
+                "💬 Поддержка",
+                url="https://t.me/NacrutcaSUPPORTbot",
+            )
+        ],
     ]
-    uname = settings.support_bot_username
-    if uname:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    "💬 Поддержка",
-                    url=f"https://t.me/{uname}",
-                )
-            ]
-        )
     return InlineKeyboardMarkup(rows)
 
 
