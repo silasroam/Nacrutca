@@ -90,8 +90,7 @@ class Settings:
             )
         self.database_url: str = raw_db_url
 
-        # Support Bot token + username (hardcoded by request for the Nacrutca support bot).
-        self.support_bot_token: str = "8658441399:AAHUBgSOXzwqOtmZHgzqiPXh3eW1FDoQGxA"
+        # Support Bot username used for deep links and URL buttons.
         self.support_bot_username: str = "NacrutcaSUPPORTbot"
 
         # ------------------------------------------------------------------
