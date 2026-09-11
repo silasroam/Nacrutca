@@ -17,23 +17,13 @@ def main_menu() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("🛡️ Правила и гарантии", callback_data=C.CB_RULES)],
     ]
-    # "🛟 Поддержка" opens the separate Support Bot (only if its username is set).
-    # Falls back to a callback button when only the support bot token is configured.
+    # "🛟 Поддержка" opens the separate Support Bot via a plain t.me/<username> link.
     if settings.support_bot_username:
         rows.append(
             [
                 InlineKeyboardButton(
                     "🛟 Поддержка",
                     url=f"https://t.me/{settings.support_bot_username}",
-                )
-            ]
-        )
-    elif settings.support_bot_token:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    "🛟 Поддержка",
-                    callback_data=C.CB_SUPPORT,
                 )
             ]
         )
